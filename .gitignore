@@ -1,0 +1,27 @@
+# API Keys and Secrets
+.env
+
+# Local Editor Settings
+.vscode/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+bot_info/python_modules/__pycache__/
+
+# Bot Memory and Logs (Prevents leaking JSON chat data)
+bots/bot_info/bot_logs/
+bots/bot_info/short_term_memory/
+bots/bot_info/long_term_memory/
+bots/bot_info/config_files
+bots/bot_info/bot_startup_scripts
+
+# Virtual Environments (if added later)
+venv/
+env/
+
+
+# Ignored Bot Scripts
+bots/chud_bot.py
+bots/uwu_bot.py
