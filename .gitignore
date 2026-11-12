@@ -10,12 +10,21 @@ __pycache__/
 *$py.class
 bot_info/python_modules/__pycache__/
 
-# Bot Memory and Logs (Prevents leaking JSON chat data)
-bots/bot_info/bot_logs/
-bots/bot_info/short_term_memory/
-bots/bot_info/long_term_memory/
-bots/bot_info/config_files
-bots/bot_info/bot_startup_scripts
+# Bot Memory and Logs
+bots/bot_info/bot_logs/*
+!bots/bot_info/bot_logs/.gitkeep
+
+bots/bot_info/short_term_memory/*
+!bots/bot_info/short_term_memory/.gitkeep
+
+bots/bot_info/long_term_memory/*
+!bots/bot_info/long_term_memory/.gitkeep
+
+bots/bot_info/bot_startup_scripts/*
+!bots/bot_info/bot_startup_scripts/.gitkeep
+
+bots/bot_info/config_files/*
+!bots/bot_info/config_files/.gitkeep
 
 # Virtual Environments (if added later)
 venv/
