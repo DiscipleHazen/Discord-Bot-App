@@ -30,29 +30,56 @@ async def fetch_online_gif(search_query: str, giphy_key: str) -> str:
     if not clean_q:
         return ""
 
-    meaningful_words = [w for w in clean_q.split() if w.lower() not in STOPWORDS and len(w) > 1]
+    q_words = [w.lower() for w in clean_q.split() if len(w) > 1]
+    meaningful_words = [w for w in q_words if w not in STOPWORDS]
+    if not meaningful_words:
+        meaningful_words = q_words
+
+    # Words that Giphy notoriously spams on generic queries ("happy", "vote", "party")
+    spam_Mismatch_terms = {
+        "birthday", "bday", "voting", "ballot", "election", "hanukkah",
+        "christmas", "new year", "anniversary", "graduation", "mothers day", "fathers day"
+    }
+    allowed_spam = {t for t in spam_Mismatch_terms if t in clean_q.lower()}
+
     searches = [clean_q]
-    if len(meaningful_words) > 2:
+    if len(meaningful_words) > 3:
         short_q = " ".join(meaningful_words[:3])
         if short_q not in searches:
             searches.append(short_q)
-    if len(meaningful_words) >= 2:
-        pair_q = " ".join(meaningful_words[:2])
-        if pair_q not in searches:
-            searches.append(pair_q)
-    elif len(meaningful_words) == 1 and meaningful_words[0] not in searches:
-        searches.append(meaningful_words[0])
 
     for query in searches:
         try:
             url = sanitize_url(
-                f"https://api.giphy.com/v1/gifs/search?api_key={giphy_key}&q={urllib.parse.quote(query)}&limit=10&rating=pg-13&lang=en"
+                f"https://api.giphy.com/v1/gifs/search?api_key={giphy_key}&q={urllib.parse.quote(query)}&limit=12&rating=pg-13&lang=en"
             )
             res = await asyncio.to_thread(lambda u=url: get_http_session().get(u, timeout=6))
-            data = res.json()
-            if data.get("data"):
-                top_pool = data["data"][:5]
-                return random.choice(top_pool)["images"]["original"]["url"]
+            if res.status_code != 200:
+                continue
+            data = res.json().get("data", [])
+            if not data:
+                continue
+
+            scored_candidates = []
+            for item in data:
+                gif_url = item.get("images", {}).get("original", {}).get("url", "")
+                if not gif_url:
+                    continue
+                title_slug = f"{item.get('title', '')} {item.get('slug', '')}".lower().replace("-", " ")
+
+                # Reject unrelated birthday/voting/holiday cards unless the query asked for them
+                if any(bad in title_slug for bad in (spam_Mismatch_terms - allowed_spam)):
+                    continue
+
+                title_tokens = set(re.findall(r'[a-z0-9]+', title_slug))
+                overlap = len(set(meaningful_words) & title_tokens)
+                scored_candidates.append((overlap, gif_url))
+
+            if scored_candidates:
+                scored_candidates.sort(key=lambda x: x[0], reverse=True)
+                best_score = scored_candidates[0][0]
+                top_matches = [u for sc, u in scored_candidates if sc == best_score][:2]
+                return random.choice(top_matches)
         except Exception:
             continue
     return ""

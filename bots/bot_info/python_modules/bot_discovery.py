@@ -33,20 +33,20 @@ def build_universal_media_instructions(
     style_clause = f" Tailor the aesthetic to your persona ({image_style_hint})." if image_style_hint else ""
     if enable_image_gen:
         rules.append(
-            "- **Custom Memes (`[MEME_GEN: ...]`) & Images (`[IMAGE_GEN: ...]`)**:\n"
-            "  1. **GENERATE MORE MEMES (`[MEME_GEN: visual scene | TOP TEXT | BOTTOM TEXT]`)**: Whenever a user asks for a meme, OR when a moment in chat is funny, ironic, absurd, or roast-worthy, actively drop a custom captioned meme! Format it with 3 pipe-separated parts: `[MEME_GEN: detailed visual description of the scene/character (NO written text inside the image itself) | SHORT PUNCHY TOP CAPTION | SHORT PUNCHY BOTTOM PUNCHLINE]`. Prefer `[MEME_GEN: ...]` over plain images whenever humor or banter is involved.\n"
-            "  2. **Standard Images (`[IMAGE_GEN: detailed visual prompt]`)**: When asked for a regular artwork/portrait/render without meme captions, or when showing a serious/scenic visual adds strong punch, append `[IMAGE_GEN: detailed visual prompt]`.\n"
+            "- **Frequent Visuals — Balance Standard Images (`[IMAGE_GEN: ...]`) & Memes (`[MEME_GEN: ...]`)**:\n"
+            "  1. **WHEN TO USE STANDARD `[IMAGE_GEN: detailed visual prompt]`**: Use `[IMAGE_GEN: ...]` (WITHOUT top/bottom text captions) when asked for an image/art/pic/photo, OR when spontaneously illustrating what your character is doing, looking at, holding, or reacting to in a scenic, artistic, or candid way.\n"
+            "  2. **WHEN TO USE CAPTIONED MEMES `[MEME_GEN: visual scene | TOP TEXT | BOTTOM TEXT]`**: Use `[MEME_GEN: ...]` when a user asks for a meme, OR when delivering a punchy roast, ironic joke, or relatable format where top/bottom Impact text makes the joke hit harder. Keep a natural ~50/50 mix between uncaptioned `[IMAGE_GEN:]` art/photos and captioned `[MEME_GEN:]` memes—do NOT turn every single image into a captioned meme!\n"
             "  3. **ORIGINALITY & ANTI-CLONING**: NEVER copy or reuse an existing `[Attached Media Description:]` or another bot's recent image/meme concept. Always invent a completely fresh visual angle, setting, and composition from your own persona's perspective.\n"
-            f"  4. **HIGH-QUALITY VISUAL PROMPTS**: Write vivid, concrete visual descriptions (25–50 words) specifying subject, action, setting, camera angle, lighting, and art medium.{style_clause} Never ask the image model to render written sentences inside the artwork itself (use `[MEME_GEN: scene | top | bottom]` so the caption engine overlays crisp text automatically)."
+            f"  4. **HIGH-QUALITY VISUAL PROMPTS**: Write vivid, concrete visual descriptions (25–50 words) specifying subject, action, setting, camera angle, lighting, and art medium.{style_clause} Never ask the image model to render written sentences inside the artwork itself."
         )
     else:
         rules.append("- **Image & Meme Generation**: DISABLED. Do NOT generate images/memes or use `[IMAGE_GEN:]` or `[MEME_GEN:]` tags.")
 
     if enable_gifs:
         rules.append(
-            "- **Frequent Reaction GIFs (`[GIF: ...]`)**:\n"
-            "  1. Actively spice up your banter, roasts, comebacks, and reactions by appending `[GIF: concise 2-4 word meme search]` whenever you are NOT already outputting `[MEME_GEN:]` or `[IMAGE_GEN:]`.\n"
-            "  2. Never combine `[GIF:]` with `[MEME_GEN:]` or `[IMAGE_GEN:]`."
+            "- **Rare Reaction GIFs (`[GIF: ...]`)**:\n"
+            "  1. Use `[GIF: specific 2-4 word reaction query]` SPARINGLY (only ~15% of the time when a classic reaction GIF is a 10/10 fit and you are NOT using `[IMAGE_GEN:]` or `[MEME_GEN:]`). Prefer generating a custom `[IMAGE_GEN:]` or `[MEME_GEN:]` or replying with pure text over spamming Giphy links.\n"
+            "  2. When you do use `[GIF:]`, write a concrete visual emotion/action query (e.g. `[GIF: anime shocked gasp]`, `[GIF: disappointed facepalm]`)—never vague words like `vote` or `happy`."
         )
     else:
         rules.append("- **GIFs**: DISABLED. Do NOT use `[GIF:]` tags.")

@@ -92,16 +92,16 @@ def build_memory_attribution_rules(bot_name: str, other_bot_names: list[str] = N
     )
     
 def build_media_and_meme_rules(enable_image_gen: bool, enable_gifs: bool) -> str:
-    rules = ["\n\n### EXPRESSIVE MEME, GIF & IMAGE GENERATION RULES:"]
+    rules = ["\n\n### EXPRESSIVE VISUALS, MEME & GIF BALANCE RULES:"]
     if enable_image_gen:
         rules.append(
-            "- **CUSTOM MEME GENERATION (`[MEME_GEN: visual scene | TOP TEXT | BOTTOM TEXT]`)**: You can generate custom captioned memes! "
-            "Whenever a moment is funny, roast-worthy, ironic, or a user asks for a meme, append `[MEME_GEN: vivid description of the funny scene/character (no text in scene) | SHORT TOP CAPTION | SHORT BOTTOM PUNCHLINE]`. "
-            "Look for opportunities to drop custom memes (`[MEME_GEN: ...]`) alongside or in place of standard images (`[IMAGE_GEN: ...]`) when the vibe calls for humor!"
+            "- **PROACTIVE IMAGES & MEMES (`[IMAGE_GEN:]` vs `[MEME_GEN:]`)**: Actively look for opportunities to generate custom visuals when a moment is funny, dramatic, or descriptive! "
+            "Use standard `[IMAGE_GEN: detailed visual scene]` for candid scenes, portraits, or reactions that don't need text overlays, and use `[MEME_GEN: vivid visual scene (no text in scene) | SHORT TOP CAPTION | SHORT BOTTOM PUNCHLINE]` when a classic top/bottom caption punchline makes the joke funnier. "
+            "Keep a healthy ~50/50 balance between normal uncaptioned `[IMAGE_GEN:]` images and captioned `[MEME_GEN:]` memes!"
         )
     if enable_gifs:
         rules.append(
-            "- **FREQUENT REACTION GIFS & MEMES (`[GIF: search query]`)**: Actively spice up your banter, roasts, and reactions by appending `[GIF: 2-4 word meme/reaction search query]` (unless you are already generating a `[MEME_GEN:]` or `[IMAGE_GEN:]` in the same turn)."
+            "- **USE GIFS SPARINGLY (`[GIF: search query]`)**: Do NOT attach `[GIF:]` to every message. Only use `[GIF: specific 2-4 word emotion/reaction]` occasionally (~15% of turns) when you are NOT generating an image or meme. When in doubt, prefer `[IMAGE_GEN:]`, `[MEME_GEN:]`, or text alone over a Giphy link."
         )
     return "\n".join(rules) if len(rules) > 1 else ""
 
@@ -181,6 +181,7 @@ def run_bot(
     channel_gen_locks: dict[int, asyncio.Lock] = {}
     channel_last_replied_msg_id: dict[int, int] = {}
     channel_followup_state: dict[int, dict] = {}
+    channel_last_gif_time: dict[int, float] = {}
     random_loop_started = False
 
     extracted_voice_role = default_voice_role
@@ -776,6 +777,54 @@ def run_bot(
             if ref_has_media:
                 image_bytes = await fetch_image_bytes_from_message(ref_message)
 
+       # Split-Message Media Lookback: Wait for any in-flight Vision cache on the previous message and attach its context
+        if will_respond and ch_enable_vision and not image_bytes:
+            try:
+                async for prev_m in message.channel.history(limit=3, before=message):
+                    if (message.created_at - prev_m.created_at).total_seconds() > 90:
+                        break
+                    prev_has_media = bool(prev_m.attachments or URL_REGEX.search(prev_m.content) or prev_m.embeds)
+                    if prev_has_media and (prev_m.author.id == message.author.id or not prev_m.author.bot):
+                        # 1. If another bot (or our own Message 1 task) is currently summarizing prev_m, wait for the cache!
+                        img_cache_chk = load_json_file(shared_image_cache_file, {})
+                        prev_desc = img_cache_chk.get(prev_m.id, "")
+                        if isinstance(prev_desc, str) and prev_desc.startswith("PROCESSING"):
+                            for _ in range(16):
+                                await asyncio.sleep(0.6)
+                                img_cache_chk = load_json_file(shared_image_cache_file, {})
+                                prev_desc = img_cache_chk.get(prev_m.id, "")
+                                if not (isinstance(prev_desc, str) and prev_desc.startswith("PROCESSING")):
+                                    break
+
+                        # 2. Fetch the image bytes so the Vision model can see it directly, and ensure chat_memory has prev_desc
+                        image_bytes = await fetch_image_bytes_from_message(prev_m)
+                        if not prev_desc and image_bytes:
+                            prev_desc = await summarize_image_for_memory(image_bytes, api_key, vision_model, api_url)
+                            if prev_desc:
+                                def _save_prev_desc(c, pid=prev_m.id, pd=prev_desc):
+                                    c[pid] = pd
+                                    return c
+                                update_json_file(shared_image_cache_file, {}, _save_prev_desc)
+
+                        if prev_desc:
+                            prev_line = f"[{prev_m.author.display_name}]: {prev_m.content.strip()}" if prev_m.content.strip() else f"[{prev_m.author.display_name} uploaded media]"
+                            upsert_chat_memory_entry(
+                                chat_memory_file,
+                                channel_id,
+                                {
+                                    "role": "user",
+                                    "content": f"{prev_line}\n{prev_desc}".strip(),
+                                    "message_id": prev_m.id,
+                                    "author_id": prev_m.author.id,
+                                    "author_is_bot": prev_m.author.bot,
+                                    "author_name": prev_m.author.display_name
+                                },
+                                max_history_length
+                            )
+                        break
+            except Exception:
+                pass
+
         gif_slug = extract_gif_slug(clean_content) if ch_enable_gifs else ""
         yt_meta = await get_youtube_metadata(clean_content)
 
@@ -945,7 +994,6 @@ def run_bot(
                                 continue
                             if m.get("author_is_bot") or m.get("role") == "assistant" or m.get("author_id") != message.author.id:
                                 break
-                            # Do not coalesce an earlier line if it was explicitly addressed to a DIFFERENT bot!
                             m_addr = m.get("addressed_bot")
                             if m_addr and m_addr.lower() != client.user.display_name.lower():
                                 break
@@ -1042,7 +1090,7 @@ def run_bot(
                                 "role": "system",
                                 "content": (
                                     "System Directive: The user is explicitly asking you to generate an image. "
-                                    "You MUST append a creative, persona-appropriate `[IMAGE_GEN: detailed visual description]` (or `[MEME_GEN: visual scene | TOP TEXT | BOTTOM TEXT]` if comedic) tag at the end of your response. "
+                                    "You MUST append a creative, persona-appropriate `[IMAGE_GEN: detailed visual description]` tag (WITHOUT meme text captions) at the end of your response. "
                                     "Do NOT output `[GIF:]` in the same message."
                                 )
                             })
@@ -1074,7 +1122,7 @@ def run_bot(
                                             "type": "text",
                                             "text": (
                                                 f"{api_messages[i]['content']}\n"
-                                                "[System Visual Note: If the attached media shows a 2x2 grid of frames, it is a chronological sequence of keyframes from a single video or animated GIF (top-left to bottom-right). Treat it as one continuous animation/video clip, not a 4-panel collage.]"
+                                                "[System Visual Note: Focus directly on the attached image/animation above! If it shows a 2x2 grid of frames, it is a chronological sequence of keyframes from a single video or animated GIF (top-left to bottom-right). Treat it as one continuous animation/video clip, not a 4-panel collage.]"
                                             )
                                         },
                                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64_image}"}}
@@ -1266,10 +1314,10 @@ def run_bot(
                                     )
                                     if img_gen_match:
                                         raw_img_tag = img_gen_match.group(1).strip()
-                                        if "|" in raw_img_tag:
+                                        if "|" in raw_img_tag and not is_explicit_img_req:
                                             img_prompt, meme_top_text, meme_bottom_text = parse_meme_gen_tag(raw_img_tag)
                                         else:
-                                            img_prompt = raw_img_tag
+                                            img_prompt = raw_img_tag.split("|")[0].strip()
 
                                 other_bot_just_generated_on_msg = any(
                                     r.get("trigger_msg_id") == message.id and r.get("bot_id") != client.user.id
@@ -1294,7 +1342,7 @@ def run_bot(
 
                                 if img_prompt:
                                     img_prompt = await ensure_unique_image_prompt(
-                                        img_prompt, gen_records, raw_history, client.user.display_name, persona_summary, clean_content, api_key, text_model, api_url
+                                        img_prompt, gen_records, raw_history, client.user.display_name, persona_summary, clean_content, api_key, text_model, api_url, reply_text=reply
                                     )
 
                             reply = LEARN_USER_STRIP_REGEX.sub('', reply).strip()
@@ -1312,7 +1360,14 @@ def run_bot(
                             if ch_enable_gifs and not img_prompt and not directed_at_other_bot:
                                 gif_match = GIF_EXTRACT_REGEX.search(reply) or UNCLOSED_GIF_EXTRACT_REGEX.search(reply)
                                 if gif_match:
-                                    gif_search_term = gif_match.group(1).strip()
+                                    candidate_gif_term = gif_match.group(1).strip()
+                                    now_ts = time.time()
+                                    gif_cooldown_ok = (now_ts - channel_last_gif_time.get(channel_id, 0)) >= 120.0
+                                    if is_explicit_gif_req or (gif_cooldown_ok and random.random() < 0.35):
+                                        gif_search_term = candidate_gif_term
+                                        channel_last_gif_time[channel_id] = now_ts
+                                    else:
+                                        print(f"[{client.user.display_name}] [INFO] Suppressed unsolicited GIF ('{candidate_gif_term}') to keep GIF usage low.")
                             reply = GIF_STRIP_REGEX.sub('', reply).strip()
                             reply = clean_and_compact_reply(reply)
 

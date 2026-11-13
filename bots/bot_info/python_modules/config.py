@@ -124,7 +124,10 @@ EXPLICIT_IMAGE_REQ_REGEX = re.compile(
     re.IGNORECASE
 )
 BOT_IMAGE_PROMISE_REGEX = re.compile(
-    r'\b(i\'ll generate|i generated|one rendering of|here\'s the (?:image|pic|picture|render|drawing|portrait|meme)|loading screen i generated|pull it out of the aether|give you one that\'s technically accurate|let\'s see what we\'re working with)\b',
+    r'\b(i\'ll generate|i generated|one rendering of|here\'s the (?:image|pic|picture|render|drawing|portrait|meme)|'
+    r'loading screen i generated|pull it out of the aether|give you one that\'s technically accurate|'
+    r'let\'s see what we\'re working with|behold[—\-\s]|points\s+at\s+|hologram\s+flickers\s+to\s+life|'
+    r'look\s+at\s+this\s+|see\?\s+certified)\b',
     re.IGNORECASE
 )
 EXPLICIT_VOICE_REQ_REGEX = re.compile(

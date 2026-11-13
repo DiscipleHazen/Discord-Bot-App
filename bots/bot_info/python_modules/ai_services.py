@@ -241,11 +241,13 @@ async def ensure_unique_image_prompt(
     user_prompt: str,
     api_key: str,
     text_model: str,
-    api_url: str
+    api_url: str,
+    reply_text: str = ""
 ) -> str:
     """
-    Rewrites proposed prompts if they overlap heavily with recently generated images
-    or chat descriptions, ensuring a completely distinct visual concept is rendered.
+    Only rewrites an image prompt if it is a near-identical clone (>= 0.68 token overlap)
+    of another bot's recently generated image, while strictly preserving the exact subject
+    and items the bot described in its text reply.
     """
     proposed_tokens = _normalize_tokens(img_prompt)
     if not proposed_tokens:
@@ -253,51 +255,40 @@ async def ensure_unique_image_prompt(
 
     conflicting_prompts = []
 
-    for rec in (recent_gen_records or [])[-8:]:
+    for rec in (recent_gen_records or [])[-5:]:
         prev_prompt = rec.get("prompt", "")
         prev_tokens = _normalize_tokens(prev_prompt)
         if not prev_tokens:
             continue
         overlap = len(proposed_tokens & prev_tokens) / float(min(len(proposed_tokens), len(prev_tokens)))
-        if overlap >= 0.34:
-            conflicting_prompts.append(f"- {rec.get('bot_name', 'Another bot')}: '{prev_prompt}'")
-
-    for msg in (raw_history or [])[-12:]:
-        content_str = msg.get("content", "")
-        if not isinstance(content_str, str):
-            continue
-        for desc_match in IMAGE_DESC_EXTRACT_REGEX.findall(content_str):
-            desc_tokens = _normalize_tokens(desc_match)
-            if not desc_tokens:
-                continue
-            overlap = len(proposed_tokens & desc_tokens) / float(min(len(proposed_tokens), len(desc_tokens)))
-            if overlap >= 0.36:
-                conflicting_prompts.append(f"- Recent image in chat: '{desc_match}'")
+        if overlap >= 0.68:
+            conflicting_prompts.append(f"- {rec.get('bot_name', 'Bot')}: '{prev_prompt}'")
 
     if not conflicting_prompts:
         return img_prompt
 
-    print(f"[{bot_name}] [IMAGE DIVERGENCE] Rewriting prompt to guarantee unique visual output...")
-    conflict_str = "\n".join(conflicting_prompts[:6])
+    print(f"[{bot_name}] [IMAGE DIVERGENCE] Adjusting camera/composition while preserving exact reply subject...")
+    conflict_str = "\n".join(conflicting_prompts[:4])
     rewrite_payload = {
         "model": text_model,
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    f"You are crafting a unique visual prompt for '{bot_name}'.\n"
-                    f"Persona summary: {persona_summary[:350]}\n"
-                    f"Recent images in chat already depicted these scenes:\n{conflict_str}\n\n"
-                    "TASK: Rewrite the proposed image prompt so it depicts a COMPLETELY DIFFERENT visual metaphor, setting, subject pose, camera angle, and art style that fits your persona, without repeating the animals, objects, or signs from the previous images. "
-                    "Do NOT include text signs with written sentences or pipe '|' characters. Output ONLY the new visual prompt (25-50 words) with no quotes or tags."
+                    f"You are refining an image generation prompt for '{bot_name}'.\n"
+                    f"Bot's visible chat reply: {reply_text}\n"
+                    f"Previously generated prompt to differentiate from:\n{conflict_str}\n\n"
+                    "CRITICAL RULE: You MUST keep the EXACT character, subject, props, badges, and action that the bot just described in its visible chat reply! "
+                    "Only change the camera angle, background lighting, or framing so it isn't an identical copy. "
+                    "Output ONLY the refined visual prompt (25-50 words) with no quotes or tags."
                 )
             },
             {
                 "role": "user",
-                "content": f"User message: {user_prompt}\nProposed prompt to make unique: {img_prompt}"
+                "content": f"Proposed prompt: {img_prompt}"
             }
         ],
-        "temperature": 0.85,
+        "temperature": 0.65,
         "max_tokens": 90
     }
     res = await post_with_backoff(
@@ -318,7 +309,7 @@ async def ensure_unique_image_prompt(
         except Exception:
             pass
 
-    return f"{img_prompt}, distinct cinematic perspective by {bot_name}, dramatic lighting, unique composition"
+    return img_prompt
 
 
 async def synthesize_missing_image_prompt(
@@ -331,28 +322,24 @@ async def synthesize_missing_image_prompt(
     text_model: str,
     api_url: str
 ) -> str | None:
-    recent_avoid = "\n".join(f"- {r.get('prompt', '')}" for r in (recent_gen_records or [])[-5:])
-    avoid_clause = f"\nAvoid copying these recent prompts:\n{recent_avoid}" if recent_avoid else ""
-
     payload = {
         "model": text_model,
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    f"You are the visual imagination engine for '{bot_name}' ({persona_summary[:300]}). "
-                    "Based on the user's request and your character's text reply, write a vivid, concrete image generation prompt (25-50 words) describing the exact scene, subject, lighting, and art style your character is presenting. "
-                    "Avoid putting long written sentences on signs."
-                    f"{avoid_clause}\n"
+                    f"You are the visual imagination engine for '{bot_name}'. "
+                    "Read the bot's text reply carefully and write a vivid, concrete image generation prompt (25-50 words) that depicts the EXACT subject, character, props, and details the bot is showing or pointing at in its reply. "
+                    "Do NOT replace the subject of the bot's reply with a generic picture of the bot itself! "
                     "Output ONLY the raw visual description with no tags or commentary."
                 )
             },
             {
                 "role": "user",
-                "content": f"User asked: {user_prompt}\nYour text reply: {reply_text}"
+                "content": f"User asked: {user_prompt}\nBot's text reply (depict what the bot is showing here): {reply_text}"
             }
         ],
-        "temperature": 0.75,
+        "temperature": 0.55,
         "max_tokens": 85
     }
     res = await post_with_backoff(
@@ -366,7 +353,8 @@ async def synthesize_missing_image_prompt(
     if res and res.status_code == 200:
         try:
             synth = res.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-            synth = re.sub(r'^\[?\s*IMAGE_GEN\s*:\s*|\s*\]$', '', synth, flags=re.IGNORECASE).strip(' "\'')
+            synth = re.sub(r'^\[?\s*(?:IMAGE_GEN|MEME_GEN)\s*:\s*|\s*\]$', '', synth, flags=re.IGNORECASE).strip(' "\'')
+            synth = synth.split("|")[0].strip()
             if len(synth) > 10:
                 return synth
         except Exception:
