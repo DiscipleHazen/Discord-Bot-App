@@ -29,10 +29,30 @@ OG_IMAGE_REGEX_2 = re.compile(
 )
 
 # Context & Memory Extraction
-LEARN_USER_EXTRACT_REGEX = re.compile(r'(?:!LEARN_USER|\[LEARN_USER)[|:]?\s*([^\|]+)\|\s*([^\]\n]+)\]?', re.IGNORECASE)
-LEARN_USER_STRIP_REGEX = re.compile(r'(?:!LEARN_USER|\[LEARN_USER)[|:]?\s*[^\|]+\|\s*[^\]\n]*\]?', re.IGNORECASE)
-LEARN_EXTRACT_REGEX = re.compile(r'(?:!LEARN|\[LEARN)(?!_USER)[|:]?\s*([^\]\n]+)\]?', re.IGNORECASE)
-LEARN_STRIP_REGEX = re.compile(r'(?:!LEARN|\[LEARN)(?!_USER)[|:]?\s*[^\]\n]*\]?', re.IGNORECASE)
+LEARN_USER_EXTRACT_REGEX = re.compile(
+    r'(?:!LEARN_USER|\[LEARN_USER)\s*[|:]\s*([^\|]+)\|\s*([^\]\n]+)\]?',
+    re.IGNORECASE
+)
+LEARN_USER_STRIP_REGEX = re.compile(
+    r'(?:!LEARN_USER|\[LEARN_USER)\s*[|:]\s*[^\|]+\|\s*[^\]\n]*\]?',
+    re.IGNORECASE
+)
+LEARN_GENERAL_EXTRACT_REGEX = re.compile(
+    r'(?:!LEARN_GENERAL(?:_FACT|_KNOWLEDGE)?|\[LEARN_GENERAL(?:_FACT|_KNOWLEDGE)?)\s*[|:]\s*([^\]\n]+)\]?',
+    re.IGNORECASE
+)
+LEARN_GENERAL_STRIP_REGEX = re.compile(
+    r'(?:!LEARN_GENERAL(?:_FACT|_KNOWLEDGE)?|\[LEARN_GENERAL(?:_FACT|_KNOWLEDGE)?)\s*[|:]\s*[^\]\n]*\]?',
+    re.IGNORECASE
+)
+LEARN_EXTRACT_REGEX = re.compile(
+    r'(?:!LEARN(?:_SERVER|_LORE|_FACT)?|\[LEARN(?:_SERVER|_LORE|_FACT)?)(?!_USER|_GENERAL)\s*[|:]\s*([^\]\n]+)\]?',
+    re.IGNORECASE
+)
+LEARN_STRIP_REGEX = re.compile(
+    r'(?:!LEARN(?:_SERVER|_LORE|_FACT)?|\[LEARN(?:_SERVER|_LORE|_FACT)?)(?!_USER|_GENERAL)\s*[|:]\s*[^\]\n]*\]?',
+    re.IGNORECASE
+)
 
 # Hearsay & Reported Speech Detection
 THIRD_PARTY_REPORT_REGEX = re.compile(
@@ -54,10 +74,12 @@ FACT_HEARSAY_PREFIX_REGEX = re.compile(
 )
 
 # Media Extraction & Cleansing
+MEME_GEN_REGEX = re.compile(r'\[\s*MEME_GEN\s*:\s*(.*?)\s*\]', re.IGNORECASE | re.DOTALL)
+UNCLOSED_MEME_GEN_REGEX = re.compile(r'\[\s*MEME_GEN\s*:\s*([^\]]{10,})$', re.IGNORECASE | re.DOTALL)
 IMAGE_GEN_REGEX = re.compile(r'\[\s*IMAGE_GEN\s*:\s*(.*?)\s*\]', re.IGNORECASE | re.DOTALL)
 UNCLOSED_IMAGE_GEN_REGEX = re.compile(r'\[\s*IMAGE_GEN\s*:\s*([^\]]{10,})$', re.IGNORECASE | re.DOTALL)
 FALLBACK_IMAGE_NOTE_REGEX = re.compile(
-    r'\*\(System Note:[^)]*successfully attached an image of [\'"](.+?)[\'"]\)\*',
+    r'\*\(System Note:[^)]*successfully attached a(?:n image| meme) of [\'"](.+?)[\'"]\)\*',
     re.IGNORECASE | re.DOTALL
 )
 VOICE_START_REGEX = re.compile(r'\[\s*VOICE_MSG\s*:\s*', re.IGNORECASE)
@@ -79,11 +101,11 @@ REACT_NOTE_EXTRACT_REGEX = re.compile(
 
 # Strips any saved or echoed API/System error notices
 ERROR_REPLY_STRIP_REGEX = re.compile(
-    r'\*\((?:API Error [^\)]+|System:[^\)]+|Brain empty[^\)]*|(?:Image|Voice) generation [^\)]+)\)\*',
+    r'\*\((?:API Error [^\)]+|System:[^\)]+|Brain empty[^\)]*|(?:Image|Meme|Voice) generation [^\)]+)\)\*',
     re.IGNORECASE
 )
 ERROR_REPLY_CAPTURE_REGEX = re.compile(
-    r'\*\(((?:API Error [^\)]+|System:[^\)]+|Brain empty[^\)]*|(?:Image|Voice) generation [^\)]+))\)\*',
+    r'\*\(((?:API Error [^\)]+|System:[^\)]+|Brain empty[^\)]*|(?:Image|Meme|Voice) generation [^\)]+))\)\*',
     re.IGNORECASE
 )
 
@@ -91,13 +113,18 @@ ERROR_REPLY_CAPTURE_REGEX = re.compile(
 BRACKET_EMOTE_REGEX = re.compile(r'\[([a-zA-Z][a-zA-Z0-9\s,\'\-\.~!]{1,45})\](?!\()')
 
 # Explicit user media intent detection
+EXPLICIT_MEME_REQ_REGEX = re.compile(
+    r'\b(generate|make|create|cook|drop|send|give|show|render|draw)\b[^\n]{0,45}\b(meme|memes|shitpost)\b'
+    r'|\b(meme\s+(?:of|about|for|when))\b',
+    re.IGNORECASE
+)
 EXPLICIT_IMAGE_REQ_REGEX = re.compile(
     r'\b(generate|draw|render|make|create|show|give|send|paint|sketch|wheres|where is|still no)\b[^\n]{0,45}\b(image|pic|picture|art|photo|render|drawing|painting|portrait|loading screen|illustration|wallpaper)\b'
     r'|\b(image|pic|picture|portrait|drawing)\s+of\b',
     re.IGNORECASE
 )
 BOT_IMAGE_PROMISE_REGEX = re.compile(
-    r'\b(i\'ll generate|i generated|one rendering of|here\'s the (?:image|pic|picture|render|drawing|portrait)|loading screen i generated|pull it out of the aether|give you one that\'s technically accurate|let\'s see what we\'re working with)\b',
+    r'\b(i\'ll generate|i generated|one rendering of|here\'s the (?:image|pic|picture|render|drawing|portrait|meme)|loading screen i generated|pull it out of the aether|give you one that\'s technically accurate|let\'s see what we\'re working with)\b',
     re.IGNORECASE
 )
 EXPLICIT_VOICE_REQ_REGEX = re.compile(
@@ -106,7 +133,7 @@ EXPLICIT_VOICE_REQ_REGEX = re.compile(
     re.IGNORECASE
 )
 EXPLICIT_GIF_REQ_REGEX = re.compile(
-    r'\b(send|post|drop|show|give)\b[^\n]{0,30}\b(gif|meme clip)\b',
+    r'\b(send|post|drop|show|give)\b[^\n]{0,30}\b(gif|reaction gif|meme clip)\b',
     re.IGNORECASE
 )
 

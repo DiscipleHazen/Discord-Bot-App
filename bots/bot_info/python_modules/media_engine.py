@@ -9,7 +9,7 @@ from io import BytesIO
 
 import discord
 import cv2
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 from config import (
     MAX_DOWNLOAD_BYTES, YT_REGEX, TENOR_REGEX, GIPHY_REGEX,
@@ -417,3 +417,103 @@ async def fetch_image_bytes_from_message(message: discord.Message) -> bytes | No
                     if processed:
                         return processed
     return None
+
+def render_meme_captions(image_bytes: bytes, top_text: str = "", bottom_text: str = "") -> bytes:
+    """
+    Overlays classic Impact/bold white meme text with a thick black stroke onto
+    the top and/or bottom of generated image bytes, dynamically scaling font size
+    so longer punchlines never get clipped.
+    """
+    if not image_bytes or (not top_text.strip() and not bottom_text.strip()):
+        return image_bytes
+
+    try:
+        img = Image.open(BytesIO(image_bytes)).convert("RGBA")
+        draw = ImageDraw.Draw(img)
+        w, h = img.size
+
+        font_candidates = [
+            "impact.ttf", "Impact.ttf",
+            "C:/Windows/Fonts/impact.ttf",
+            "C:/Windows/Fonts/arialbd.ttf",
+            "C:/Windows/Fonts/segoeui.ttf",
+            "/usr/share/fonts/truetype/msttcorefonts/Impact.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/TTF/Impact.ttf",
+            "/System/Library/Fonts/Supplemental/Impact.ttf",
+            "arialbd.ttf"
+        ]
+
+        def _load_font(sz: int):
+            for fc in font_candidates:
+                try:
+                    return ImageFont.truetype(fc, sz)
+                except Exception:
+                    continue
+            try:
+                return ImageFont.load_default(size=sz)
+            except TypeError:
+                return ImageFont.load_default()
+
+        def _wrap_and_draw(text_str: str, is_top: bool):
+            clean = text_str.strip().upper()
+            if not clean:
+                return
+
+            # Scale font size down slightly for longer captions so they fit within 3 lines
+            scale_factor = 0.075 if len(clean) <= 42 else (0.062 if len(clean) <= 75 else 0.052)
+            font_size = max(22, int(h * scale_factor))
+            font = _load_font(font_size)
+
+            words = clean.split()
+            lines = []
+            current_line = []
+            max_width = int(w * 0.92)
+
+            for word in words:
+                test_line = " ".join(current_line + [word])
+                bbox = draw.textbbox((0, 0), test_line, font=font)
+                if (bbox[2] - bbox[0]) <= max_width or not current_line:
+                    current_line.append(word)
+                else:
+                    lines.append(" ".join(current_line))
+                    current_line = [word]
+            if current_line:
+                lines.append(" ".join(current_line))
+
+            lines = lines[:4]
+            line_heights = []
+            for ln in lines:
+                bbox = draw.textbbox((0, 0), ln, font=font)
+                line_heights.append((bbox[3] - bbox[1]) + int(font_size * 0.22))
+
+            total_block_h = sum(line_heights)
+            margin_y = int(h * 0.035)
+            y_cursor = margin_y if is_top else max(margin_y, h - total_block_h - margin_y)
+            stroke_w = max(3, int(font_size * 0.09))
+
+            for idx, ln in enumerate(lines):
+                bbox = draw.textbbox((0, 0), ln, font=font)
+                lw = bbox[2] - bbox[0]
+                x_pos = max(10, (w - lw) // 2)
+                draw.text(
+                    (x_pos, y_cursor),
+                    ln,
+                    font=font,
+                    fill=(255, 255, 255, 255),
+                    stroke_width=stroke_w,
+                    stroke_fill=(0, 0, 0, 255)
+                )
+                y_cursor += line_heights[idx]
+
+        if top_text:
+            _wrap_and_draw(top_text, is_top=True)
+        if bottom_text:
+            _wrap_and_draw(bottom_text, is_top=False)
+
+        out = BytesIO()
+        img.convert("RGB").save(out, format="PNG")
+        return out.getvalue()
+    except Exception as e:
+        print(f"[WARN] Meme caption overlay failed: {e}")
+        return image_bytes

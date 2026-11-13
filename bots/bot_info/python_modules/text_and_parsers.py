@@ -2,7 +2,9 @@ import re
 from config import (
     VOICE_START_REGEX, MIMO_AUDIO_TAG_MAP, URL_REGEX, IMAGE_GEN_REGEX,
     UNCLOSED_IMAGE_GEN_REGEX, GIF_STRIP_REGEX, TTS_KAOMOJI_STRIP_REGEX,
-    BRACKET_EMOTE_REGEX, ERROR_REPLY_STRIP_REGEX, IMAGE_DESC_STRIP_REGEX
+    BRACKET_EMOTE_REGEX, ERROR_REPLY_STRIP_REGEX, IMAGE_DESC_STRIP_REGEX,
+    MEME_GEN_REGEX, UNCLOSED_MEME_GEN_REGEX, LEARN_GENERAL_STRIP_REGEX,
+    LEARN_USER_STRIP_REGEX, LEARN_STRIP_REGEX
 )
 
 # ==============================================================================
@@ -114,6 +116,8 @@ def parse_mimotts_voice_block(
         assistant_speech_content = raw_voice_content.strip()
 
     assistant_speech_content = URL_REGEX.sub('', assistant_speech_content)
+    assistant_speech_content = MEME_GEN_REGEX.sub('', assistant_speech_content)
+    assistant_speech_content = UNCLOSED_MEME_GEN_REGEX.sub('', assistant_speech_content)
     assistant_speech_content = IMAGE_GEN_REGEX.sub('', assistant_speech_content)
     assistant_speech_content = UNCLOSED_IMAGE_GEN_REGEX.sub('', assistant_speech_content)
     assistant_speech_content = GIF_STRIP_REGEX.sub('', assistant_speech_content)
@@ -155,7 +159,10 @@ def convert_bracket_emotes_to_asterisks(text: str) -> str:
     def _replace(match):
         inner = match.group(1).strip()
         lower_inner = inner.lower()
-        if lower_inner.startswith(("http", "image_gen", "voice_msg", "gif", "attached", "contains", "system", "replying")):
+        if lower_inner.startswith((
+            "http", "image_gen", "meme_gen", "voice_msg", "gif",
+            "attached", "contains", "system", "replying", "addressed", "directed", "learn"
+        )):
             return match.group(0)
         return f"*{inner}*"
 
@@ -171,14 +178,17 @@ def clean_and_compact_reply(reply: str) -> str:
         return ""
 
     reply = ERROR_REPLY_STRIP_REGEX.sub('', reply)
+    reply = LEARN_USER_STRIP_REGEX.sub('', reply)
+    reply = LEARN_GENERAL_STRIP_REGEX.sub('', reply)
+    reply = LEARN_STRIP_REGEX.sub('', reply)
     reply = re.sub(
-        r'\[(?:Generated Attached (?:Image\vert{}Voice Audio)\vert{}Sent (?:GIF\vert{}Image\vert{}Audio) of\vert{}System Glitch (?:Event\vert{}Context)):[^\n]*\]\n?',
+        r'\[(?:Generated Attached (?:Image\vert{}Meme\vert{}Voice Audio)\vert{}Sent (?:GIF\vert{}Image\vert{}Meme\vert{}Audio) of\vert{}System Glitch (?:Event\vert{}Context)):[^\n]*\]\n?',
         '',
         reply,
         flags=re.IGNORECASE
     )
     reply = re.sub(r'\*\s*\(System Note:.*?\)\s*\*?\n?', '', reply, flags=re.IGNORECASE)
-    reply = re.sub(r'\*\s*\([^)]*learned (?:server fact\vert{}about).*?\)\s*\*?\n?', '', reply, flags=re.IGNORECASE)
+    reply = re.sub(r'\*\s*\([^)]*learned (?:server fact\vert{}general fact\vert{}about).*?\)\s*\*?\n?', '', reply, flags=re.IGNORECASE)
 
     reply = convert_bracket_emotes_to_asterisks(reply)
 
@@ -201,3 +211,31 @@ def clean_and_compact_reply(reply: str) -> str:
     if len(lines) <= 4 and sum(len(l) for l in lines) < 420:
         return " ".join(lines).strip()
     return "\n".join(lines).strip()
+
+def parse_meme_gen_tag(raw_meme_str: str) -> tuple[str, str, str]:
+    """
+    Parses a [MEME_GEN: visual scene | TOP TEXT | BOTTOM TEXT] tag into
+    (visual_prompt, top_text, bottom_text), gracefully handling 2-part tags
+    and accidental newlines.
+    """
+    cleaned_raw = re.sub(r'\s+', ' ', raw_meme_str.strip()).rstrip(']')
+    parts = [p.strip().strip('"\'') for p in cleaned_raw.split("|") if p.strip()]
+
+    visual_prompt = parts[0] if len(parts) >= 1 else ""
+    top_text = parts[1] if len(parts) >= 2 else ""
+    bottom_text = parts[2] if len(parts) >= 3 else ""
+
+    visual_prompt = re.sub(r'^(?:scene|image|visual|prompt)\s*:\s*', '', visual_prompt, flags=re.IGNORECASE).strip()
+    top_text = re.sub(r'^(?:top\s*text|top|caption\s*1)\s*:\s*', '', top_text, flags=re.IGNORECASE).strip()
+    bottom_text = re.sub(r'^(?:bottom\s*text|bottom|caption\s*2)\s*:\s*', '', bottom_text, flags=re.IGNORECASE).strip()
+
+    # If the LLM only provided 1 caption block (2 pipe parts total) and it has a natural setup/punchline split
+    if top_text and not bottom_text and len(top_text) > 32:
+        if " / " in top_text:
+            sp = top_text.split(" / ", 1)
+            top_text, bottom_text = sp[0].strip(), sp[1].strip()
+        elif " - " in top_text:
+            sp = top_text.split(" - ", 1)
+            top_text, bottom_text = sp[0].strip(), sp[1].strip()
+
+    return visual_prompt, top_text, bottom_text

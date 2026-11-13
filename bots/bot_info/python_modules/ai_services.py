@@ -15,7 +15,7 @@ from config import (
 )
 from core_system import post_with_backoff, update_json_file
 from text_and_parsers import parse_mimotts_voice_block
-from media_engine import safe_download_url_bytes
+from media_engine import safe_download_url_bytes, render_meme_captions
 
 # ==============================================================================
 # VISION, EMOJIS, IMAGE & VOICE GENERATION ENGINES
@@ -125,7 +125,8 @@ async def get_contextual_emojis(
             content_str = msg.get("content", "")
             if not isinstance(content_str, str) or content_str.startswith("System Note:"):
                 continue
-            cleaned_turn = re.sub(r'\*\(System Note:.*?\)\*', '', content_str).strip()
+            cleaned_turn = re.sub(r'\*\(System Note:.*?\)\*', '', content_str, flags=re.IGNORECASE).strip()
+            cleaned_turn = re.sub(r'\*\([^)]*learned (?:server fact|general fact|about).*?\)\*', '', cleaned_turn, flags=re.IGNORECASE).strip()
             cleaned_turn = ERROR_REPLY_STRIP_REGEX.sub('', cleaned_turn).strip()
             if cleaned_turn and not re.fullmatch(r'\[[^\]]+\]:\s*', cleaned_turn):
                 clean_recent_turns.append(cleaned_turn)
@@ -288,7 +289,7 @@ async def ensure_unique_image_prompt(
                     f"Persona summary: {persona_summary[:350]}\n"
                     f"Recent images in chat already depicted these scenes:\n{conflict_str}\n\n"
                     "TASK: Rewrite the proposed image prompt so it depicts a COMPLETELY DIFFERENT visual metaphor, setting, subject pose, camera angle, and art style that fits your persona, without repeating the animals, objects, or signs from the previous images. "
-                    "Do NOT include text signs with written sentences. Output ONLY the new visual prompt (25-50 words) with no quotes or tags."
+                    "Do NOT include text signs with written sentences or pipe '|' characters. Output ONLY the new visual prompt (25-50 words) with no quotes or tags."
                 )
             },
             {
@@ -310,7 +311,8 @@ async def ensure_unique_image_prompt(
     if res and res.status_code == 200:
         try:
             new_p = res.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-            new_p = re.sub(r'^\[?\s*IMAGE_GEN\s*:\s*|\s*\]$', '', new_p, flags=re.IGNORECASE).strip(' "\'')
+            new_p = re.sub(r'^\[?\s*(?:IMAGE_GEN|MEME_GEN)\s*:\s*|\s*\]$', '', new_p, flags=re.IGNORECASE).strip(' "\'')
+            new_p = new_p.split("|")[0].strip()
             if len(new_p) > 15:
                 return new_p
         except Exception:
@@ -380,9 +382,15 @@ async def generate_image_attachment(
     bot_name: str,
     channel_id: int,
     trigger_msg_id: int,
-    shared_image_cache_file: str
+    shared_image_cache_file: str,
+    meme_top_text: str = "",
+    meme_bottom_text: str = ""
 ) -> tuple[BytesIO | None, str | None]:
-    print(f"[{bot_name}] [IMAGE GEN] Requesting: '{img_prompt}'")
+    is_meme = bool(meme_top_text.strip() or meme_bottom_text.strip())
+    mode_label = "MEME GEN" if is_meme else "IMAGE GEN"
+    err_prefix = "Meme" if is_meme else "Image"
+    print(f"[{bot_name}] [{mode_label}] Requesting: '{img_prompt}' (Top='{meme_top_text}', Bottom='{meme_bottom_text}')")
+
     img_res = await post_with_backoff(
         "https://api.deepinfra.com/v1/openai/images/generations",
         headers={"Authorization": f"Bearer {api_key}"},
@@ -396,7 +404,7 @@ async def generate_image_attachment(
         bot_name=bot_name
     )
     if img_res is None:
-        return None, "*(Image generation timed out)*"
+        return None, f"*({err_prefix} generation timed out)*"
 
     if img_res.status_code == 200:
         try:
@@ -410,6 +418,10 @@ async def generate_image_attachment(
                 raw_img_bytes = base64.b64decode(img_b64)
 
             if raw_img_bytes and len(raw_img_bytes) > 256:
+                if is_meme:
+                    raw_img_bytes = await asyncio.to_thread(
+                        render_meme_captions, raw_img_bytes, meme_top_text, meme_bottom_text
+                    )
                 image_file = BytesIO(raw_img_bytes)
                 image_file.seek(0)
 
@@ -417,11 +429,12 @@ async def generate_image_attachment(
                     gen_hist = cache_data.get("_generated_images", [])
                     if not isinstance(gen_hist, list):
                         gen_hist = []
+                    caption_note = f" [Meme Caption: '{meme_top_text} / {meme_bottom_text}']" if is_meme else ""
                     gen_hist.append({
                         "bot_id": bot_id,
                         "bot_name": bot_name,
                         "channel_id": channel_id,
-                        "prompt": img_prompt,
+                        "prompt": f"{img_prompt}{caption_note}",
                         "trigger_msg_id": trigger_msg_id,
                         "timestamp": time.time()
                     })
@@ -431,16 +444,16 @@ async def generate_image_attachment(
                 update_json_file(shared_image_cache_file, {}, _record_gen)
                 return image_file, None
         except Exception as e:
-            print(f"[{bot_name}] [ERROR] Image Gen decode failed: {e}")
-            return None, "*(Image generation decode error)*"
+            print(f"[{bot_name}] [ERROR] {err_prefix} Gen decode failed: {e}")
+            return None, f"*({err_prefix} generation decode error)*"
     else:
         err_txt = "Blocked or unavailable"
         try:
             err_txt = img_res.json().get("error", {}).get("message", err_txt)
         except Exception:
             pass
-        print(f"[{bot_name}] [ERROR] Image Gen failed: {img_res.status_code}")
-        return None, f"*(Image generation failed | {img_res.status_code}: {err_txt})*"
+        print(f"[{bot_name}] [ERROR] {err_prefix} Gen failed: {img_res.status_code}")
+        return None, f"*({err_prefix} generation failed | {img_res.status_code}: {err_txt})*"
     return None, None
 
 
@@ -507,3 +520,60 @@ async def generate_voice_attachment(
         print(f"[{bot_name}] [ERROR] Voice API returned {voice_res.status_code}: {err_txt}")
         return None, None, f"*(Voice generation error {voice_res.status_code}: {err_txt})*"
     return None, None, None
+
+async def synthesize_missing_meme_spec(
+    reply_text: str,
+    user_prompt: str,
+    recent_gen_records: list[dict],
+    bot_name: str,
+    persona_summary: str,
+    api_key: str,
+    text_model: str,
+    api_url: str
+) -> tuple[str | None, str, str]:
+    recent_avoid = "\n".join(f"- {r.get('prompt', '')}" for r in (recent_gen_records or [])[-5:])
+    avoid_clause = f"\nAvoid copying these recent scenes:\n{recent_avoid}" if recent_avoid else ""
+
+    payload = {
+        "model": text_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    f"You are the meme generator engine for '{bot_name}' ({persona_summary[:300]}). "
+                    "Create a hilarious, punchy internet meme based on the conversation and your reply. "
+                    "Output EXACTLY 3 pipe-separated parts on a single line:\n"
+                    "visual scene description (20-40 words, expressive funny reaction/situation, NO written words inside the scene) | TOP CAPTION (short punchy setup) | BOTTOM CAPTION (short punchy punchline)"
+                    f"{avoid_clause}\n"
+                    "Output ONLY `visual scene | TOP TEXT | BOTTOM TEXT` with no brackets."
+                )
+            },
+            {
+                "role": "user",
+                "content": f"User asked: {user_prompt}\nYour text reply: {reply_text}"
+            }
+        ],
+        "temperature": 0.85,
+        "max_tokens": 110
+    }
+    res = await post_with_backoff(
+        api_url,
+        headers={"Authorization": f"Bearer {api_key}"},
+        json_payload=payload,
+        timeout=20,
+        max_retries=2,
+        bot_name=bot_name
+    )
+    if res and res.status_code == 200:
+        try:
+            synth = res.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            synth = re.sub(r'^\[?\s*MEME_GEN\s*:\s*|\s*\]$', '', synth, flags=re.IGNORECASE).strip(' "\'')
+            parts = [p.strip() for p in synth.split("|")]
+            if len(parts) >= 2 and len(parts[0]) > 10:
+                v_prompt = parts[0]
+                t_text = parts[1] if len(parts) >= 2 else ""
+                b_text = parts[2] if len(parts) >= 3 else ""
+                return v_prompt, t_text, b_text
+        except Exception:
+            pass
+    return None, "", ""

@@ -263,7 +263,8 @@ def build_api_messages_from_history(
     bot_display_name: str
 ) -> list[dict]:
     """
-    Builds clean conversation history for the LLM.
+    Builds clean conversation history for the LLM, annotating when a user message
+    was addressed to a DIFFERENT bot so this bot never misattributes questions or names.
     """
     api_messages = [dynamic_system]
     seen_msg_ids = set()
@@ -296,14 +297,15 @@ def build_api_messages_from_history(
             glitch_summary = extract_glitch_summary(own_text)
             img_note_match = FALLBACK_IMAGE_NOTE_REGEX.search(own_text)
             saved_img_prompt = msg.get("img_prompt") or (img_note_match.group(1) if img_note_match else None)
+            saved_meme_spec = msg.get("meme_spec")
             saved_gif_query = msg.get("gif_query")
 
             own_text = ERROR_REPLY_STRIP_REGEX.sub('', own_text).strip()
             own_text = re.sub(r'\*\(System Note:.*?\)\*', '', own_text, flags=re.IGNORECASE).strip()
-            own_text = re.sub(r'\*\([^)]*learned (?:server fact|about).*?\)\*', '', own_text, flags=re.IGNORECASE).strip()
+            own_text = re.sub(r'\*\([^)]*learned (?:server fact|general fact|about).*?\)\*', '', own_text, flags=re.IGNORECASE).strip()
             own_text = IMAGE_DESC_STRIP_REGEX.sub('', own_text).strip()
 
-            if not own_text and not saved_img_prompt and not saved_gif_query:
+            if not own_text and not saved_img_prompt and not saved_meme_spec and not saved_gif_query:
                 if glitch_summary and idx >= len(raw_history) - 10:
                     api_messages.append({
                         "role": "system",
@@ -318,7 +320,9 @@ def build_api_messages_from_history(
             if len(words) >= 3:
                 own_recent_openers.append(" ".join(words[:3]).lower())
 
-            if saved_img_prompt and "[IMAGE_GEN:" not in own_text:
+            if saved_meme_spec and "[MEME_GEN:" not in own_text:
+                own_text = f"{own_text} [MEME_GEN: {saved_meme_spec}]".strip()
+            elif saved_img_prompt and "[IMAGE_GEN:" not in own_text:
                 own_text = f"{own_text} [IMAGE_GEN: {saved_img_prompt}]".strip()
             elif saved_gif_query and "[GIF:" not in own_text:
                 own_text = f"{own_text} [GIF: {saved_gif_query}]".strip()
@@ -333,16 +337,17 @@ def build_api_messages_from_history(
         else:
             other_text = content
             author_name = msg.get("author_name", "User")
+            addressed_bot = msg.get("addressed_bot")
             glitch_summary = extract_glitch_summary(other_text)
             other_text = ERROR_REPLY_STRIP_REGEX.sub('', other_text).strip()
             other_text = re.sub(
-                r'\*\(System Note:\s*([^\)]+?)\s+successfully attached an image of [^\)]+\)\*',
+                r'\*\(System Note:\s*([^\)]+?)\s+successfully attached a(?:n image| meme) of [^\)]+\)\*',
                 r'[\1 attached a generated image]',
                 other_text,
                 flags=re.IGNORECASE
             )
             other_text = re.sub(r'\*\(System Note:.*?\)\*', '', other_text, flags=re.IGNORECASE).strip()
-            other_text = re.sub(r'\*\([^)]*learned (?:server fact|about).*?\)\*', '', other_text, flags=re.IGNORECASE).strip()
+            other_text = re.sub(r'\*\([^)]*learned (?:server fact|general fact|about).*?\)\*', '', other_text, flags=re.IGNORECASE).strip()
 
             if not other_text or re.fullmatch(r'\[[^\]]+\]:\s*', other_text):
                 if glitch_summary and idx >= len(raw_history) - 10:
@@ -365,6 +370,22 @@ def build_api_messages_from_history(
 
             if not other_text.startswith(f"[{author_name}") and not other_text.startswith("[Replying to"):
                 other_text = f"[{author_name}]: {other_text}"
+
+            if addressed_bot and addressed_bot.lower() != bot_display_name.lower():
+                other_text = re.sub(
+                    rf'(?m)^\[{re.escape(author_name)}\]:',
+                    f"[{author_name} (speaking to {addressed_bot}, NOT to {bot_display_name})]:",
+                    other_text,
+                    count=1
+                )
+            elif addressed_bot and addressed_bot.lower() == bot_display_name.lower():
+                other_text = re.sub(
+                    rf'(?m)^\[{re.escape(author_name)}\]:',
+                    f"[{author_name} (speaking to YOU, {bot_display_name})]:",
+                    other_text,
+                    count=1
+                )
+
             api_messages.append({"role": "user", "content": other_text})
             if glitch_summary and idx >= len(raw_history) - 10:
                 api_messages.append({
@@ -385,8 +406,7 @@ def build_api_messages_from_history(
 def upsert_chat_memory_entry(chat_memory_file: str, channel_id: int, entry: dict, max_history_length: int = 200):
     """
     Atomically inserts or updates a message in chat_memory.json by message_id,
-    preserving rich media descriptions and automatically converting any legacy
-    *(API Error ...)* dialogue lines into structured System Glitch Events.
+    preserving rich media descriptions and target-bot attribution tags.
     """
     def _mutate(chat_memory):
         if channel_id not in chat_memory or not isinstance(chat_memory[channel_id], list):
@@ -431,6 +451,8 @@ def upsert_chat_memory_entry(chat_memory_file: str, channel_id: int, entry: dict
                     if entry.get("role") == "assistant" or entry.get("role") == "system":
                         merged.update(entry)
                     elif merged.get("role") != "assistant":
+                        if not entry.get("addressed_bot") and merged.get("addressed_bot"):
+                            entry["addressed_bot"] = merged["addressed_bot"]
                         merged.update(entry)
                         if old_content and new_content:
                             for meta_line in old_content.split("\n"):
@@ -464,3 +486,50 @@ def upsert_chat_memory_entry(chat_memory_file: str, channel_id: int, entry: dict
         return chat_memory
 
     update_json_file(chat_memory_file, {}, _mutate)
+    
+def route_server_vs_general_facts(
+    raw_server_facts: list[str],
+    raw_general_facts: list[str],
+    recent_users: set[str],
+    other_bot_names: set[str],
+    my_bot_name: str
+) -> tuple[list[str], list[str]]:
+    """
+    Ensures universal science/trivia/world facts accidentally tagged with [LEARN: ...]
+    are automatically re-routed to general_facts unless they mention server members,
+    bots, or Discord/guild-specific terms.
+    """
+    server_indicators = {
+        "server", "guild", "channel", "discord", "admin", "mod", "mods", "vc",
+        "voice", "chat", "bot", "bots", "raid", "estate", "ledger", "steward",
+        "member", "members", "user", "users", "role", "roles", "ping", "ban", "kick"
+    }
+    for u in (recent_users or set()):
+        if u:
+            for part in re.findall(r'[a-z0-9]+', str(u).lower()):
+                if len(part) >= 3:
+                    server_indicators.add(part)
+    for b in (other_bot_names or set()):
+        if b:
+            for part in re.findall(r'[a-z0-9]+', str(b).lower()):
+                if len(part) >= 3:
+                    server_indicators.add(part)
+    for part in re.findall(r'[a-z0-9]+', (my_bot_name or "").lower()):
+        if len(part) >= 3:
+            server_indicators.add(part)
+
+    final_server_facts = []
+    final_general_facts = [f.strip().rstrip(".") for f in (raw_general_facts or []) if f and f.strip()]
+
+    for fact in (raw_server_facts or []):
+        clean_f = fact.strip().rstrip(".")
+        if not clean_f:
+            continue
+        words = set(re.findall(r'[a-z0-9]+', clean_f.lower()))
+        if words & server_indicators:
+            final_server_facts.append(clean_f)
+        else:
+            print(f"[{my_bot_name}] [FACT ROUTER] Auto-routed universal fact from Server Lore -> General Knowledge: '{clean_f}'")
+            final_general_facts.append(clean_f)
+
+    return final_server_facts, final_general_facts

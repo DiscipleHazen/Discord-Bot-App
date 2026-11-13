@@ -25,27 +25,28 @@ def build_universal_media_instructions(
     """
     rules = [
         "### CRITICAL MEDIA & TAG RULES",
-        "- **STRICT MUTUAL EXCLUSION (NO IMAGE + GIF COMBOS)**: Attach AT MOST ONE visual media tag per message. NEVER output both `[IMAGE_GEN: ...]` and `[GIF: ...]` in the same response.",
-        "- **NO PHANTOM MEDIA**: Never claim you generated, rendered, drew, or attached an image, GIF, or voice clip unless you literally include the exact `[IMAGE_GEN: ...]`, `[GIF: ...]`, or `[VOICE_MSG: ...]` tag in your response.",
-        "- **EMOTES IN ASTERISKS ONLY (NEVER BRACKETS IN CHAT)**: Never use square brackets like `[chuckle]`, `[sigh]`, `[giggle]`, or `[shrug]` in your regular chat text. Square brackets in normal text are strictly reserved for system media tags (`[IMAGE_GEN:]`, `[GIF:]`, `[VOICE_MSG:]`). If you include a physical action or emote in normal chat, wrap it in single asterisks like `*sighs*` or `*grins*`."
+        "- **STRICT MUTUAL EXCLUSION (ONE VISUAL TAG MAX)**: Attach AT MOST ONE visual media tag per message. NEVER combine `[MEME_GEN: ...]`, `[IMAGE_GEN: ...]`, and `[GIF: ...]` in the same response.",
+        "- **NO PHANTOM MEDIA**: Never claim you generated, rendered, drew, or attached a meme, image, GIF, or voice clip unless you literally include the exact `[MEME_GEN: ...]`, `[IMAGE_GEN: ...]`, `[GIF: ...]`, or `[VOICE_MSG: ...]` tag in your response.",
+        "- **EMOTES IN ASTERISKS ONLY (NEVER BRACKETS IN CHAT)**: Never use square brackets like `[chuckle]`, `[sigh]`, `[giggle]`, or `[shrug]` in your regular chat text. Square brackets in normal text are strictly reserved for system media tags (`[MEME_GEN:]`, `[IMAGE_GEN:]`, `[GIF:]`, `[VOICE_MSG:]`). If you include a physical action or emote in normal chat, wrap it in single asterisks like `*sighs*` or `*grins*`."
     ]
 
     style_clause = f" Tailor the aesthetic to your persona ({image_style_hint})." if image_style_hint else ""
     if enable_image_gen:
         rules.append(
-            "- **Autonomous & Requested Images (`[IMAGE_GEN: ...]`)**:\n"
-            "  1. When a user asks you for an image, OR when showing what you are doing, holding, looking at, or roasting adds strong visual punch, append `[IMAGE_GEN: detailed visual prompt]`.\n"
-            "  2. **ORIGINALITY & ANTI-CLONING**: NEVER copy or reuse an existing `[Attached Media Description:]` or another bot's recent image concept. Always invent a completely fresh visual angle, setting, and composition from your own persona's perspective.\n"
-            f"  3. **HIGH-QUALITY VISUAL PROMPTS**: Write vivid, concrete prompts (25–50 words) specifying subject, action, setting, camera angle, lighting, and art medium.{style_clause} Avoid asking the image model to render long sentences of written text on signs."
+            "- **Custom Memes (`[MEME_GEN: ...]`) & Images (`[IMAGE_GEN: ...]`)**:\n"
+            "  1. **GENERATE MORE MEMES (`[MEME_GEN: visual scene | TOP TEXT | BOTTOM TEXT]`)**: Whenever a user asks for a meme, OR when a moment in chat is funny, ironic, absurd, or roast-worthy, actively drop a custom captioned meme! Format it with 3 pipe-separated parts: `[MEME_GEN: detailed visual description of the scene/character (NO written text inside the image itself) | SHORT PUNCHY TOP CAPTION | SHORT PUNCHY BOTTOM PUNCHLINE]`. Prefer `[MEME_GEN: ...]` over plain images whenever humor or banter is involved.\n"
+            "  2. **Standard Images (`[IMAGE_GEN: detailed visual prompt]`)**: When asked for a regular artwork/portrait/render without meme captions, or when showing a serious/scenic visual adds strong punch, append `[IMAGE_GEN: detailed visual prompt]`.\n"
+            "  3. **ORIGINALITY & ANTI-CLONING**: NEVER copy or reuse an existing `[Attached Media Description:]` or another bot's recent image/meme concept. Always invent a completely fresh visual angle, setting, and composition from your own persona's perspective.\n"
+            f"  4. **HIGH-QUALITY VISUAL PROMPTS**: Write vivid, concrete visual descriptions (25–50 words) specifying subject, action, setting, camera angle, lighting, and art medium.{style_clause} Never ask the image model to render written sentences inside the artwork itself (use `[MEME_GEN: scene | top | bottom]` so the caption engine overlays crisp text automatically)."
         )
     else:
-        rules.append("- **Image Generation**: DISABLED. Do NOT generate images or use `[IMAGE_GEN:]` tags.")
+        rules.append("- **Image & Meme Generation**: DISABLED. Do NOT generate images/memes or use `[IMAGE_GEN:]` or `[MEME_GEN:]` tags.")
 
     if enable_gifs:
         rules.append(
-            "- **Reaction GIFs (`[GIF: ...]`)**:\n"
-            "  1. When a short reaction meme or clip fits better than a custom generated image—and you are NOT using `[IMAGE_GEN:]`—append `[GIF: concise 2-4 word meme search]`.\n"
-            "  2. Never combine `[GIF:]` with `[IMAGE_GEN:]`."
+            "- **Frequent Reaction GIFs (`[GIF: ...]`)**:\n"
+            "  1. Actively spice up your banter, roasts, comebacks, and reactions by appending `[GIF: concise 2-4 word meme search]` whenever you are NOT already outputting `[MEME_GEN:]` or `[IMAGE_GEN:]`.\n"
+            "  2. Never combine `[GIF:]` with `[MEME_GEN:]` or `[IMAGE_GEN:]`."
         )
     else:
         rules.append("- **GIFs**: DISABLED. Do NOT use `[GIF:]` tags.")
@@ -74,7 +75,7 @@ def build_universal_media_instructions(
         )
 
     rules.append(
-        "- **Tag Placement**: Always write normal conversational chat text first, and place any `[IMAGE_GEN: ...]`, `[GIF: ...]`, or `[VOICE_MSG: ...]` tag at the very end."
+        "- **Tag Placement**: Always write normal conversational chat text first, and place any `[MEME_GEN: ...]`, `[IMAGE_GEN: ...]`, `[GIF: ...]`, or `[VOICE_MSG: ...]` tag at the very end."
     )
     return "\n".join(rules)
 
@@ -172,6 +173,9 @@ def is_command_directed_at_other_bot(
         for alias in ob.get("aliases", []):
             if alias and alias not in my_terms:
                 other_bot_terms.add(alias)
+        for kw in ob.get("keywords", []):
+            if kw and kw not in my_terms:
+                other_bot_terms.add(kw)
 
     for mentioned_user in message.mentions:
         if getattr(mentioned_user, "bot", False) and mentioned_user.id != my_bot_id:
@@ -184,15 +188,21 @@ def is_command_directed_at_other_bot(
     if not other_bot_terms:
         return False
 
+    # 1. If the message begins by addressing THIS bot, it's for us
     for my_t in sorted(my_terms, key=len, reverse=True):
         if my_t and re.match(rf'^(?:hey\s+|ok\s+|yo\s+|please\s+)?@?{re.escape(my_t)}\b', clean_lower):
             return False
 
+    # 2. If the message begins by addressing ANOTHER bot, it's directed at them
     for other_alias in sorted(other_bot_terms, key=len, reverse=True):
         if other_alias and re.match(rf'^(?:hey\s+|ok\s+|yo\s+|please\s+)?@?{re.escape(other_alias)}\b', clean_lower):
             return True
 
-    cmd_verbs = r'(?:please\s+)?(?:generate|draw|render|make|create|send|record|say|speak|give|show|paint|roast)'
+    # 3. Check if another bot is immediately followed by a command verb or question
+    cmd_verbs = (
+        r'(?:please\s+)?(?:generate|draw|render|make|create|cook|drop|send|record|say|speak|'
+        r'give|show|paint|roast|meme|shitpost|tell|explain|rate|rank|what\s+do\s+you|how\s+do\s+you|are\s+you|do\s+you)'
+    )
     for other_alias in sorted(other_bot_terms, key=len, reverse=True):
         if other_alias and re.search(rf'\b{re.escape(other_alias)}[,:\s]+{cmd_verbs}\b', clean_lower):
             if not any(
@@ -201,20 +211,21 @@ def is_command_directed_at_other_bot(
             ):
                 return True
 
+    # 4. Check if our bot name ONLY appears after a target preposition ("of", "about", "for", "at", "with")
     has_other_bot_word = any(
         ob_t and re.search(rf'\b{re.escape(ob_t)}\b', clean_lower)
         for ob_t in other_bot_terms
     )
     if has_other_bot_word:
         my_as_object = any(
-            my_t and re.search(rf'\b(?:of|about|for|at|with)\s+@?{re.escape(my_t)}\b', clean_lower)
+            my_t and re.search(rf'\b(?:of|about|for|at|with|to|from|than)\s+@?{re.escape(my_t)}\b', clean_lower)
             for my_t in sorted(my_terms, key=len, reverse=True)
         )
         if my_as_object:
             stripped_check = clean_lower
             for my_t in sorted(my_terms, key=len, reverse=True):
                 if my_t:
-                    stripped_check = re.sub(rf'\b(?:of|about|for|at|with)\s+@?{re.escape(my_t)}\b', '', stripped_check)
+                    stripped_check = re.sub(rf'\b(?:of|about|for|at|with|to|from|than)\s+@?{re.escape(my_t)}\b', '', stripped_check)
             still_mentions_me = any(
                 my_t and re.search(rf'\b{re.escape(my_t)}\b', stripped_check)
                 for my_t in my_terms
@@ -317,43 +328,46 @@ async def resolve_contextual_followup(
     followup_window_messages: int = 2,
     max_followup_turns: int = 2,
     followup_timeout: float = 180.0,
-    api_key: str = "",
-    text_model: str = "",
-    api_url: str = ""
+    **kwargs
 ) -> tuple[bool, str]:
     """
-    3-Stage Hybrid Context Engine with a Non-Looping State Machine.
+    Detects when a human sends a natural conversational follow-up within a 1-2 message
+    window after this bot spoke, using Stage 1 (addressing filter), Stage 2 (window/token check),
+    and Stage 3 (lightweight API relevance check when api_key is provided).
     """
-    # STAGE 1: Deterministic Reject
-    if message.author.bot or (message.reference and message.reference.message_id):
+    if message.author.bot:
+        return False, ""
+
+    if message.reference and message.reference.message_id:
         return False, ""
 
     channel_id = message.channel.id
     state = channel_followup_state.get(channel_id)
     now = time.time()
 
-    if state:
-        if not state.get("active", True):
-            return False, "" 
-        if (now - state.get("timestamp", 0)) > followup_timeout or state.get("turns_used", 0) >= max_followup_turns:
-            state["active"] = False
-            return False, ""
-
-    if mentions_other_active_bot(clean_content, message, my_bot_id, my_display_name, my_keywords, shared_image_cache_file):
-        if state: state["active"] = False
-        return False, ""
-
     base_my_name = re.sub(r'\s+v?\d+(?:\.\d+)*$', '', my_display_name.strip(), flags=re.IGNORECASE).strip().lower()
     my_terms = {my_display_name.strip().lower(), base_my_name}
     for kw in (my_keywords or []):
         if kw and kw.strip():
             my_terms.add(kw.strip().lower())
+            my_terms.add(f"{kw.strip().lower()} bot")
 
-    if is_addressing_other_person(clean_content, my_terms):
-        if state: state["active"] = False
+    # Stage 1: Abort if user mentions another bot or greets another person by name
+    if mentions_other_active_bot(
+        clean_content, message, my_bot_id, my_display_name, my_keywords, shared_image_cache_file
+    ) or is_addressing_other_person(clean_content, my_terms):
+        channel_followup_state.pop(channel_id, None)
         return False, ""
 
-    non_system_msgs = [m for m in chat_history_list if m.get("role") != "system" and isinstance(m.get("content"), str) and m.get("content").strip()]
+    if state:
+        if not state.get("active", True) or (now - state.get("timestamp", 0)) > followup_timeout or state.get("turns_used", 0) >= max_followup_turns:
+            channel_followup_state.pop(channel_id, None)
+            return False, ""
+
+    non_system_msgs = [
+        m for m in chat_history_list
+        if isinstance(m, dict) and m.get("role") != "system" and isinstance(m.get("content"), str) and m.get("content").strip()
+    ]
     if not non_system_msgs:
         return False, ""
 
@@ -362,7 +376,11 @@ async def resolve_contextual_followup(
     distance_from_end = 0
 
     for idx, m in enumerate(reversed(recent_window), start=1):
-        if (m.get("author_id") == my_bot_id) or (m.get("role") == "assistant" and m.get("author_name") == my_display_name):
+        is_self = (
+            m.get("author_id") == my_bot_id
+            or (m.get("role") == "assistant" and m.get("author_name") == my_display_name)
+        )
+        if is_self:
             bot_msg_entry = m
             distance_from_end = idx
             break
@@ -370,36 +388,123 @@ async def resolve_contextual_followup(
     if not bot_msg_entry:
         return False, ""
 
+    if state and state.get("turns_used", 0) >= max_followup_turns:
+        return False, ""
+
+    if distance_from_end == 2 and len(recent_window) >= 2:
+        intervening_msg = recent_window[-1]
+        if intervening_msg.get("author_is_bot") and intervening_msg.get("author_id") != my_bot_id:
+            user_tokens = normalize_tokens(clean_content)
+            my_bot_tokens = normalize_tokens(bot_msg_entry.get("content", ""))
+            other_bot_tokens = normalize_tokens(intervening_msg.get("content", ""))
+            overlap_me = len(user_tokens & my_bot_tokens)
+            overlap_other = len(user_tokens & other_bot_tokens)
+            if overlap_me == 0 or overlap_me <= overlap_other:
+                return False, ""
+
     raw_bot_text = bot_msg_entry.get("content", "")
-    clean_bot_text = URL_REGEX.sub('', ERROR_REPLY_STRIP_REGEX.sub('', IMAGE_DESC_STRIP_REGEX.sub('', raw_bot_text))).strip()
-    context_header = f"[Replying to {my_display_name}: \"{clean_bot_text[:157]}{'...' if len(clean_bot_text)>160 else ''}\"]"
+    clean_bot_text = IMAGE_DESC_STRIP_REGEX.sub('', raw_bot_text).strip()
+    clean_bot_text = ERROR_REPLY_STRIP_REGEX.sub('', clean_bot_text).strip()
+    clean_bot_text = URL_REGEX.sub('', clean_bot_text).strip()
+    if len(clean_bot_text) > 160:
+        clean_bot_text = clean_bot_text[:157] + "..."
 
-    # STAGE 2: Deterministic Accept
-    content_lower = clean_content.lower()
-    is_direct_q = bool(re.search(r'\b(you|your|u|ur|wbu|what about you)\b.*\?', content_lower))
-    is_direct_rxn = bool(re.search(r'\b(thanks|thx|glad|love|hate|lmao|lol|haha)\b', content_lower))
-    is_yes_no = bool(re.match(r'^(yes|no|yeah|nope|sure|ok|okay|yep|nah)\b', content_lower))
-    has_q_mark = '?' in raw_bot_text
+    # Stage 3: Verify ambiguous follow-ups via fast API check if credentials are provided
+    api_key = kwargs.get("api_key")
+    api_url = kwargs.get("api_url")
+    text_model = kwargs.get("text_model")
+    if api_key and api_url and text_model and clean_bot_text and clean_content:
+        user_tokens = normalize_tokens(clean_content)
+        bot_tokens = normalize_tokens(clean_bot_text)
+        if len(user_tokens & bot_tokens) == 0:
+            is_rel = await check_followup_relevance_via_api(
+                api_url=api_url,
+                api_key=api_key,
+                text_model=text_model,
+                bot_name=my_display_name,
+                bot_recent_text=clean_bot_text,
+                user_text=clean_content
+            )
+            if not is_rel:
+                return False, ""
 
-    is_stage_2_accept = False
-    if distance_from_end == 1 and state and (now - state.get("timestamp", 0)) < 60:
-        if is_direct_q or is_direct_rxn or (has_q_mark and is_yes_no):
-            is_stage_2_accept = True
-
-    # STAGE 3: Lightweight API Classifier
-    if not is_stage_2_accept:
-        if distance_from_end == 2 and len(recent_window) >= 2:
-            intervening_msg = recent_window[-1]
-            if intervening_msg.get("author_is_bot") and intervening_msg.get("author_id") != my_bot_id:
-                overlap_me = len(normalize_tokens(clean_content) & normalize_tokens(raw_bot_text))
-                overlap_other = len(normalize_tokens(clean_content) & normalize_tokens(intervening_msg.get("content", "")))
-                if overlap_me == 0 or overlap_me <= overlap_other:
-                    return False, ""
-
-        is_relevant = await check_followup_relevance_via_api(
-            api_url, api_key, text_model, my_display_name, raw_bot_text, clean_content
-        )
-        if not is_relevant:
-            return False, ""
-
+    context_header = (
+        f"[Replying to {my_display_name}: \"{clean_bot_text}\"]"
+        if clean_bot_text
+        else f"[Replying to {my_display_name}'s previous message]"
+    )
     return True, context_header
+
+def detect_addressed_bot_name(
+    text: str,
+    message: discord.Message,
+    my_bot_id: int,
+    my_display_name: str,
+    my_keywords: list[str] | None,
+    shared_image_cache_file: str
+) -> str | None:
+    """
+    Determines which specific bot (by display_name) a user's message is directly
+    addressing so shared chat history can explicitly tag `[Carzen (speaking to Chud Bot 2.8, NOT to Guild Assistant)]: ...`
+    even when multiple bots are mentioned in the same sentence.
+    """
+    clean_lower = text.strip().lower()
+    if not clean_lower:
+        return None
+
+    # 1. Explicit Discord reply to a bot
+    if message.reference and isinstance(message.reference.resolved, discord.Message):
+        ref_author = message.reference.resolved.author
+        if getattr(ref_author, "bot", False):
+            return ref_author.display_name.strip()
+
+    # Build a unified map of {term: canonical_bot_display_name} for THIS bot and all OTHER bots
+    base_my_name = re.sub(r'\s+v?\d+(?:\.\d+)*$', '', my_display_name.strip(), flags=re.IGNORECASE).strip().lower()
+    term_to_bot: dict[str, str] = {
+        my_display_name.strip().lower(): my_display_name.strip(),
+        base_my_name: my_display_name.strip()
+    }
+    for kw in (my_keywords or []):
+        if kw and len(kw.strip()) >= 3:
+            term_to_bot[kw.strip().lower()] = my_display_name.strip()
+            term_to_bot[f"{kw.strip().lower()} bot"] = my_display_name.strip()
+
+    guild_members = getattr(message.guild, "members", None) if message.guild else None
+    other_bots = get_other_active_bots(shared_image_cache_file, my_bot_id, guild_members)
+    for ob in other_bots:
+        ob_name = ob.get("display_name", "").strip()
+        if not ob_name:
+            continue
+        for term in (ob.get("aliases", []) + ob.get("keywords", [])):
+            t_clean = term.strip().lower()
+            if len(t_clean) >= 3 and t_clean not in ("bot", "the", "app") and t_clean not in term_to_bot:
+                term_to_bot[t_clean] = ob_name
+
+    # 2. Check if the message starts by addressing any bot ("hey chud...", "@uwu Bot 2.8...")
+    for term in sorted(term_to_bot.keys(), key=len, reverse=True):
+        if term and re.match(rf'^(?:hey\s+|hi\s+|ok\s+|yo\s+|please\s+)?@?{re.escape(term)}\b', clean_lower):
+            return term_to_bot[term]
+
+    # 3. Check if a bot is mentioned and is NOT just the object of a preposition ("of @Chud Bot")
+    for mentioned_user in message.mentions:
+        if getattr(mentioned_user, "bot", False):
+            m_name = mentioned_user.display_name.strip()
+            if not re.search(rf'\b(?:of|about|for|at|with|than)\s+@?{re.escape(m_name.lower())}\b', clean_lower):
+                return m_name
+
+    # 4. Otherwise, find the earliest bot term in the sentence that isn't preceded by "of/about/for"
+    best_pos = len(clean_lower) + 1
+    best_bot = None
+    for term, bot_disp in sorted(term_to_bot.items(), key=lambda x: len(x[0]), reverse=True):
+        if not term:
+            continue
+        for m in re.finditer(rf'\b{re.escape(term)}\b', clean_lower):
+            start_pos = m.start()
+            prefix_slice = clean_lower[max(0, start_pos - 12):start_pos]
+            if re.search(r'\b(?:of|about|for|at|with|than)\s+@?$', prefix_slice):
+                continue
+            if start_pos < best_pos:
+                best_pos = start_pos
+                best_bot = bot_disp
+
+    return best_bot

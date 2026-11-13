@@ -217,10 +217,31 @@ import sys, os
 from dotenv import load_dotenv
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(current_dir, 'bot_info', 'python_modules'))
-import manage_discord_bots as mdb
+from main_bot import run_bot
+from bot_discovery import build_universal_media_instructions
 load_dotenv(os.path.join(current_dir, 'bot_info', '.env'))
 
-SYSTEM_PROMPT = {'role': 'system', 'content': """$bprompt"""}
+def get_system_prompt(enable_image_gen: bool, enable_voice: bool, enable_gifs: bool = True) -> dict:
+    media_section = build_universal_media_instructions(
+        enable_image_gen=enable_image_gen,
+        enable_voice=enable_voice,
+        enable_gifs=enable_gifs
+    )
+    return {
+        'role': 'system',
+        'content': f"""$bprompt
+
+### Strict Formatting & Spacing Rules
+- Write your response as a single compact line or tight paragraph with NO blank lines between sentences.
+- Wrap physical actions/emotes in single asterisks like *sighs* or *grins*, never square brackets.
+
+### Memory & Smart Learning (3-Tier Protocol)
+- User Personal Facts (self-stated only): [LEARN_USER: username | concise objective fact]
+- Shared General Knowledge (universal trivia/science): [LEARN_GENERAL: concise objective fact]
+- Server-Specific Lore (Discord server events/jokes only): [LEARN: concise objective fact]
+
+{media_section}"""
+    }
 
 # --- BOT CONFIGURATION CONSTANTS ---
 TOKEN = os.getenv('$tok_key')
@@ -230,23 +251,33 @@ GIPHY_KEY = os.getenv('GIPHY_TOKEN')
 CHAT_MEMORY_FILE = os.path.join(current_dir, 'bot_info', 'short_term_memory', 'chat_memory.json')
 SHARED_IMAGE_CACHE_FILE = os.path.join(current_dir, 'bot_info', 'short_term_memory', 'shared_image_cache.json')
 LONG_TERM_MEMORY_FILE = os.path.join(current_dir, 'bot_info', 'long_term_memory', '${safe_name}_long_term_memory.json')
+USER_PROFILES_FILE = os.path.join(current_dir, 'bot_info', 'long_term_memory', '${safe_name}_user_profiles.json')
 CHANNEL_CONFIG_FILE = os.path.join(current_dir, 'bot_info', 'config_files', '${safe_name}_channel_configs.json')
 
 TEXT_MODEL = 'Qwen/Qwen3-235B-A22B-Instruct-2507'
 VISION_MODEL = 'Qwen/Qwen3-VL-235B-A22B-Instruct'
+IMAGE_GEN_MODEL = 'black-forest-labs/FLUX-1-schnell'
+VOICE_MODEL = 'XiaomiMiMo/MiMo-V2.5-tts-voicedesign'
+TTS_VOICE = ''
+
 ENABLE_VISION = True
 ENABLE_GIFS = True
-TEMPERATURE = 0.65
-TOP_P = 0.8
-OUTPUT_LENGTH = 500
+ENABLE_IMAGE_GEN = True
+ENABLE_VOICE = False
+
+TEMPERATURE = 0.75
+TOP_P = 0.88
+OUTPUT_LENGTH = 550
 CONTEXT_WINDOW = 50
-EMOJI_CONTEXT_LENGTH = 6
-CHANCE_TO_RESPOND = 0.05
-RANDOM_EMOJI_CHANCE = 0.25
+EMOJI_CONTEXT_LENGTH = 12
+CHANCE_TO_RESPOND = 0.01
+RANDOM_EMOJI_CHANCE = 0.35
+DEFAULT_RANDOM_INTERVAL = 0
 TRIGGER_KEYWORDS = ['$safe_name']
 
 if __name__ == '__main__':
-    mdb.run_bot(token=TOKEN, api_key=API_KEY, giphy_key=GIPHY_KEY, system_prompt=SYSTEM_PROMPT, chat_memory_file=CHAT_MEMORY_FILE, shared_image_cache_file=SHARED_IMAGE_CACHE_FILE, long_term_memory_file=LONG_TERM_MEMORY_FILE, channel_config_file=CHANNEL_CONFIG_FILE, text_model=TEXT_MODEL, vision_model=VISION_MODEL, enable_vision=ENABLE_VISION, enable_gifs=ENABLE_GIFS, temperature=TEMPERATURE, top_p=TOP_P, output_length=OUTPUT_LENGTH, context_window=CONTEXT_WINDOW, emoji_context_length=EMOJI_CONTEXT_LENGTH, chance_to_respond=CHANCE_TO_RESPOND, random_emoji_chance=RANDOM_EMOJI_CHANCE, keywords=TRIGGER_KEYWORDS)
+    system_prompt = get_system_prompt(ENABLE_IMAGE_GEN, ENABLE_VOICE, ENABLE_GIFS)
+    run_bot(token=TOKEN, api_key=API_KEY, giphy_key=GIPHY_KEY, system_prompt=system_prompt, chat_memory_file=CHAT_MEMORY_FILE, shared_image_cache_file=SHARED_IMAGE_CACHE_FILE, long_term_memory_file=LONG_TERM_MEMORY_FILE, user_profiles_file=USER_PROFILES_FILE, channel_config_file=CHANNEL_CONFIG_FILE, text_model=TEXT_MODEL, vision_model=VISION_MODEL, image_gen_model=IMAGE_GEN_MODEL, voice_model=VOICE_MODEL, tts_voice=TTS_VOICE, enable_vision=ENABLE_VISION, enable_gifs=ENABLE_GIFS, enable_image_gen=ENABLE_IMAGE_GEN, enable_voice=ENABLE_VOICE, temperature=TEMPERATURE, top_p=TOP_P, output_length=OUTPUT_LENGTH, context_window=CONTEXT_WINDOW, emoji_context_length=EMOJI_CONTEXT_LENGTH, chance_to_respond=CHANCE_TO_RESPOND, random_emoji_chance=RANDOM_EMOJI_CHANCE, default_random_interval=DEFAULT_RANDOM_INTERVAL, keywords=TRIGGER_KEYWORDS)
 EOF
     echo -e "${GREEN}[SUCCESS] Created $safe_name.py and saved token!${NC}"
     echo ""; read -rp "Press Enter to continue..."

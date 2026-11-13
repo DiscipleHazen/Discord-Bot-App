@@ -13,29 +13,36 @@ from datetime import datetime
 # MODULAR IMPORTS
 # ==============================================================================
 from config import (
-    ERROR_REPLY_STRIP_REGEX, LEARN_USER_STRIP_REGEX, LEARN_STRIP_REGEX,
-    EMOJI_REACT_STRIP_REGEX, INTERNAL_REACT_STRIP_REGEX, IMAGE_DESC_STRIP_REGEX,
-    GIF_STRIP_REGEX, GIF_EXTRACT_REGEX, UNCLOSED_GIF_EXTRACT_REGEX,
+    ERROR_REPLY_STRIP_REGEX, LEARN_USER_STRIP_REGEX, LEARN_GENERAL_STRIP_REGEX,
+    LEARN_STRIP_REGEX, EMOJI_REACT_STRIP_REGEX, INTERNAL_REACT_STRIP_REGEX,
+    IMAGE_DESC_STRIP_REGEX, GIF_STRIP_REGEX, GIF_EXTRACT_REGEX,
+    UNCLOSED_GIF_EXTRACT_REGEX, MEME_GEN_REGEX, UNCLOSED_MEME_GEN_REGEX,
     IMAGE_GEN_REGEX, UNCLOSED_IMAGE_GEN_REGEX, URL_REGEX,
-    EXPLICIT_IMAGE_REQ_REGEX, BOT_IMAGE_PROMISE_REGEX, EXPLICIT_VOICE_REQ_REGEX,
-    EXPLICIT_GIF_REQ_REGEX, LEARN_USER_EXTRACT_REGEX, LEARN_EXTRACT_REGEX,
+    EXPLICIT_MEME_REQ_REGEX, EXPLICIT_IMAGE_REQ_REGEX, BOT_IMAGE_PROMISE_REGEX,
+    EXPLICIT_VOICE_REQ_REGEX, EXPLICIT_GIF_REQ_REGEX,
+    LEARN_USER_EXTRACT_REGEX, LEARN_GENERAL_EXTRACT_REGEX, LEARN_EXTRACT_REGEX,
     FALLBACK_IMAGE_NOTE_REGEX, FALLBACK_VISION_MODELS, FALLBACK_TEXT_MODELS
 )
 
 from core_system import load_json_file, update_json_file, post_with_backoff, sanitize_url
-from text_and_parsers import extract_and_strip_voice_msg, clean_and_compact_reply, derive_chat_text_from_voice
+from text_and_parsers import (
+    extract_and_strip_voice_msg, clean_and_compact_reply,
+    derive_chat_text_from_voice, parse_meme_gen_tag
+)
 from media_engine import fetch_image_bytes_from_message, fetch_online_gif, get_youtube_metadata, extract_gif_slug
 from memory_and_context import (
     extract_glitch_summary, build_api_messages_from_history, upsert_chat_memory_entry,
-    verify_and_resolve_user_facts, is_duplicate_fact, find_canonical_username
+    verify_and_resolve_user_facts, is_duplicate_fact, find_canonical_username,
+    route_server_vs_general_facts
 )
 from ai_services import (
     summarize_image_for_memory, auto_react, ensure_unique_image_prompt,
-    synthesize_missing_image_prompt, generate_image_attachment, generate_voice_attachment
+    synthesize_missing_image_prompt, synthesize_missing_meme_spec,
+    generate_image_attachment, generate_voice_attachment
 )
 from bot_discovery import (
     register_active_bot, get_other_active_bots, is_command_directed_at_other_bot,
-    resolve_contextual_followup
+    detect_addressed_bot_name, resolve_contextual_followup
 )
 
 # ==============================================================================
@@ -71,13 +78,32 @@ def build_glitch_awareness_rules(bot_name: str) -> str:
         f"- **STRICT ANTI-LOOP RULE**: NEVER output literal raw error strings like `*(API Error 504 - Provider busy. Try again in a moment.)*` or `*(System: ...)*`. Always express any reaction to a glitch in your own natural character voice."
     )
 
-def build_memory_attribution_rules() -> str:
+def build_memory_attribution_rules(bot_name: str, other_bot_names: list[str] = None) -> str:
+    other_bots_str = ", ".join(other_bot_names) if other_bot_names else "other bots in the server"
     return (
-        "\n\n### CRITICAL USER MEMORY ATTRIBUTION RULES (`[LEARN_USER: username | fact]`):\n"
-        "1. **DIRECT SELF-FACTS ONLY**: Only output `[LEARN_USER: username | fact]` when `username` is directly stating, owning, or confirming a genuine personal fact about THEMSELVES (e.g., their own job, hobbies, pets, hardware, tastes, or real-life events).\n"
-        "2. **NEVER ATTRIBUTE HEARSAY OR THIRD-PARTY QUOTES TO THE SPEAKER**: If `UserA` says *\"they said X\"*, *\"he told me X\"*, *\"she thinks X\"*, *\"someone said X\"*, or *\"I said that they said X\"*, `X` is what someone ELSE said—it is NOT a fact about `UserA`! NEVER output `[LEARN_USER: UserA | X]` for third-party or reported speech.\n"
-        "3. **NO BANTER OR HYPOTHETICALS**: Do not save temporary sarcasm, jokes, roleplay, or things a user claims about a third party into the speaker's profile."
+        "\n\n### CRITICAL IDENTITY, TARGETING & MEMORY CLASSIFICATION RULES:\n"
+        f"1. **BOT IDENTITY & MULTI-BOT CHAT AWARENESS**: You are **{bot_name}**. You share this channel with other bots ({other_bots_str}). "
+        f"When a message in history says `[Username (speaking to OtherBot, NOT to {bot_name})]: ...`, that user was talking to `OtherBot`, NOT you! "
+        f"Do NOT assume users are calling you by another bot's name (e.g., if a user asked 'chud are you X?' earlier and now says '{bot_name}?', they are simply turning to ask you now—do NOT say 'I don't answer to Chud').\n"
+        "2. **USER FACTS (`[LEARN_USER: username | fact]`)**: ONLY output `[LEARN_USER: username | fact]` when `username` directly states a real personal fact about THEMSELVES. NEVER attribute third-party quotes ('they said X', 'he told me X') or banter to the speaker.\n"
+        "3. **SERVER LORE vs. SHARED GENERAL FACTS (CRITICAL DISTINCTION)**:\n"
+        "   - Use `[LEARN: fact]` ONLY for **Discord Server Lore** (events specific to this server, channel inside jokes, server rules, or group dynamics).\n"
+        "   - Use `[LEARN_GENERAL: fact]` for **Shared General Knowledge** (universal facts about science, biology, psychology, history, tech, gaming, trivia, or the real world). NEVER save universal trivia or textbook/scientific facts as `[LEARN: ...]` server facts!"
     )
+    
+def build_media_and_meme_rules(enable_image_gen: bool, enable_gifs: bool) -> str:
+    rules = ["\n\n### EXPRESSIVE MEME, GIF & IMAGE GENERATION RULES:"]
+    if enable_image_gen:
+        rules.append(
+            "- **CUSTOM MEME GENERATION (`[MEME_GEN: visual scene | TOP TEXT | BOTTOM TEXT]`)**: You can generate custom captioned memes! "
+            "Whenever a moment is funny, roast-worthy, ironic, or a user asks for a meme, append `[MEME_GEN: vivid description of the funny scene/character (no text in scene) | SHORT TOP CAPTION | SHORT BOTTOM PUNCHLINE]`. "
+            "Look for opportunities to drop custom memes (`[MEME_GEN: ...]`) alongside or in place of standard images (`[IMAGE_GEN: ...]`) when the vibe calls for humor!"
+        )
+    if enable_gifs:
+        rules.append(
+            "- **FREQUENT REACTION GIFS & MEMES (`[GIF: search query]`)**: Actively spice up your banter, roasts, and reactions by appending `[GIF: 2-4 word meme/reaction search query]` (unless you are already generating a `[MEME_GEN:]` or `[IMAGE_GEN:]` in the same turn)."
+        )
+    return "\n".join(rules) if len(rules) > 1 else ""
 
 async def resolve_reply_context(
     message: discord.Message,
@@ -131,7 +157,7 @@ def run_bot(
     token: str, api_key: str, system_prompt: dict, giphy_key: str = None,
     chat_memory_file: str = "chat_memory.json", shared_image_cache_file: str = "shared_image_cache.json",
     long_term_memory_file: str = "long_term_memory.json", user_profiles_file: str = "user_profiles.json",
-    channel_config_file: str = "channel_configs.json",
+    channel_config_file: str = "channel_configs.json", general_memory_file: str = None,
     text_model: str = "Qwen/Qwen3-235B-A22B-Instruct-2507", vision_model: str = "Qwen/Qwen3-VL-235B-A22B-Instruct",
     image_gen_model: str = "black-forest-labs/FLUX-1-schnell", voice_model: str = "XiaomiMiMo/MiMo-V2.5-tts-voicedesign", tts_voice: str = "",
     enable_vision: bool = True, enable_gifs: bool = True, enable_image_gen: bool = False, enable_voice: bool = False,
@@ -142,6 +168,10 @@ def run_bot(
     followup_window_messages: int = 2, max_followup_turns: int = 2, followup_timeout: float = 180.0
 ):
     api_url = sanitize_url(api_url)
+    if not general_memory_file:
+        ltm_dir = os.path.dirname(os.path.abspath(long_term_memory_file))
+        general_memory_file = os.path.join(ltm_dir, "general_knowledge.json")
+
     intents = discord.Intents.default()
     intents.message_content = True
     intents.members = True
@@ -190,11 +220,15 @@ def run_bot(
                         now_str = datetime.now().strftime("%A, %I:%M %p")
                         dynamic_system["content"] += f"\n\n### Current Time Context:\n- Local Time: {now_str}"
                         dynamic_system["content"] += build_glitch_awareness_rules(client.user.display_name)
-                        dynamic_system["content"] += build_memory_attribution_rules()
+                        dynamic_system["content"] += build_memory_attribution_rules(client.user.display_name)
 
                         long_term_memory = load_json_file(long_term_memory_file, [])
                         if long_term_memory:
-                            dynamic_system["content"] += "\n### Learned Server Knowledge\n" + "\n".join(f"- {f}" for f in long_term_memory)
+                            dynamic_system["content"] += "\n### Learned Server Knowledge\n" + "\n".join(f"- {f}" for f in long_term_memory[-35:])
+
+                        general_memory = load_json_file(general_memory_file, [])
+                        if general_memory:
+                            dynamic_system["content"] += "\n### Shared General Knowledge\n" + "\n".join(f"- {f}" for f in general_memory[-35:])
 
                         api_messages = build_api_messages_from_history(
                             dynamic_system, hist[-context_window:], client.user.id, client.user.display_name
@@ -204,7 +238,7 @@ def run_bot(
                             "content": (
                                 "System Directive: Randomly initiate conversation or make a natural in-character observation. "
                                 "Keep it to a single compact line or paragraph with no blank lines. "
-                                "DO NOT output [IMAGE_GEN:], [GIF:], or [VOICE_MSG:]."
+                                "DO NOT output [IMAGE_GEN:], [MEME_GEN:], [GIF:], or [VOICE_MSG:]."
                             )
                         })
 
@@ -232,11 +266,14 @@ def run_bot(
                                 _, reply = extract_and_strip_voice_msg(reply)
                                 reply = ERROR_REPLY_STRIP_REGEX.sub('', reply).strip()
                                 reply = LEARN_USER_STRIP_REGEX.sub('', reply).strip()
+                                reply = LEARN_GENERAL_STRIP_REGEX.sub('', reply).strip()
                                 reply = LEARN_STRIP_REGEX.sub('', reply).strip()
                                 reply = EMOJI_REACT_STRIP_REGEX.sub('', reply).strip()
                                 reply = INTERNAL_REACT_STRIP_REGEX.sub('', reply).strip()
                                 reply = IMAGE_DESC_STRIP_REGEX.sub('', reply).strip()
                                 reply = GIF_STRIP_REGEX.sub('', reply).strip()
+                                reply = MEME_GEN_REGEX.sub('', reply).strip()
+                                reply = UNCLOSED_MEME_GEN_REGEX.sub('', reply).strip()
                                 reply = IMAGE_GEN_REGEX.sub('', reply).strip()
                                 reply = UNCLOSED_IMAGE_GEN_REGEX.sub('', reply).strip()
                                 reply = clean_and_compact_reply(reply)
@@ -248,8 +285,7 @@ def run_bot(
                                     except Exception:
                                         pass
                                     entry_id = sent_msg.id if sent_msg else f"random_{time.time()}_{client.user.id}"
-                                    
-                                    # State Reset for Random Posts
+
                                     channel_followup_state[ch_id_int] = {
                                         "timestamp": time.time(),
                                         "turns_used": 0,
@@ -345,8 +381,9 @@ def run_bot(
                     f"• `@{client.user.display_name} admin features <vision|gifs|image|voice> <on|off>` — Toggle media capabilities in this channel.\n"
                     f"• `@{client.user.display_name} admin temp <0.1-1.5>` — Adjust creativity temperature in this channel.\n"
                     "**Admin Memory Management:**\n"
-                    f"• `@{client.user.display_name} admin memory` — Inspect learned server lore & user profiles.\n"
+                    f"• `@{client.user.display_name} admin memory` — Inspect learned server lore, general facts & user profiles.\n"
                     f"• `@{client.user.display_name} admin learn <fact>` — Manually add a server lore fact.\n"
+                    f"• `@{client.user.display_name} admin learngeneral <fact>` — Manually add a shared general knowledge fact.\n"
                     f"• `@{client.user.display_name} admin learnuser <username> | <fact>` — Manually add a fact to a user's profile.\n"
                     f"• `@{client.user.display_name} admin forget <keyword>` — Delete any saved memory matching `<keyword>`.\n"
                     f"• `@{client.user.display_name} !clearmemory` — Wipe short-term conversation history in this channel."
@@ -475,6 +512,7 @@ def run_bot(
             elif "admin status" in content_lower:
                 conf_all = load_json_file(channel_config_file, {}).get(channel_id, {})
                 ltm = load_json_file(long_term_memory_file, [])
+                gen_mem = load_json_file(general_memory_file, [])
                 uprof = load_json_file(user_profiles_file, {})
                 cmem = load_json_file(chat_memory_file, {}).get(channel_id, [])
                 status_msg = (
@@ -482,17 +520,24 @@ def run_bot(
                     f"• Enabled: `{conf_all.get('enabled', True)}` | React-Only: `{conf_all.get('react_only', False)}`\n"
                     f"• Respond Chance: `{conf_all.get('resp_chance', chance_to_respond)}` | Emoji Chance: `{conf_all.get('emoji_chance', random_emoji_chance)}` | Random Interval: `{conf_all.get('random_interval', default_random_interval)}m`\n"
                     f"• Temperature: `{conf_all.get('temperature', temperature)}` | Keywords: `{', '.join(keywords or [])}`\n"
-                    f"• Active Media: Vision=`{conf_all.get('enable_vision', enable_vision)}`, ImageGen=`{conf_all.get('enable_image', enable_image_gen)}`, Voice=`{conf_all.get('enable_voice', enable_voice)}`, GIFs=`{conf_all.get('enable_gifs', enable_gifs)}`\n"
-                    f"• Memory: `{len(cmem)}` recent msgs | `{len(ltm)}` server facts | `{len(uprof)}` user profiles"
+                    f"• Active Media: Vision=`{conf_all.get('enable_vision', enable_vision)}`, Image/MemeGen=`{conf_all.get('enable_image', enable_image_gen)}`, Voice=`{conf_all.get('enable_voice', enable_voice)}`, GIFs=`{conf_all.get('enable_gifs', enable_gifs)}`\n"
+                    f"• Memory: `{len(cmem)}` recent msgs | `{len(ltm)}` server facts | `{len(gen_mem)}` general facts | `{len(uprof)}` user profiles"
                 )
                 await message.channel.send(status_msg)
                 return
             elif "admin memory" in content_lower:
                 ltm = load_json_file(long_term_memory_file, [])
+                gen_mem = load_json_file(general_memory_file, [])
                 uprof = load_json_file(user_profiles_file, {})
-                ltm_str = "\n".join(f"• {f}" for f in ltm[-12:]) if ltm else "None"
-                uprof_str = "\n".join(f"• **{u}**: {'; '.join(facts[-6:])}" for u, facts in uprof.items() if facts) if uprof else "None"
-                mem_msg = f"🧠 **{client.user.display_name} Memory Snapshot**\n**Server Lore:**\n{ltm_str}\n**User Profiles:**\n{uprof_str}"
+                ltm_str = "\n".join(f"• {f}" for f in ltm[-8:]) if ltm else "None"
+                gen_str = "\n".join(f"• {f}" for f in gen_mem[-8:]) if gen_mem else "None"
+                uprof_str = "\n".join(f"• **{u}**: {'; '.join(facts[-5:])}" for u, facts in uprof.items() if facts) if uprof else "None"
+                mem_msg = (
+                    f"🧠 **{client.user.display_name} Memory Snapshot**\n"
+                    f"**Server Lore:**\n{ltm_str}\n"
+                    f"**Shared General Facts:**\n{gen_str}\n"
+                    f"**User Profiles:**\n{uprof_str}"
+                )
                 await message.channel.send(mem_msg[:1950])
                 return
             elif "admin learnuser" in content_lower:
@@ -510,6 +555,18 @@ def run_bot(
                             return uprof_data
                         update_json_file(user_profiles_file, {}, _manual_uprof)
                         await message.channel.send(f"📝 Saved fact for **{u_clean}**: `{f_clean}`")
+                return
+            elif "admin learngeneral" in content_lower:
+                raw_fact = re.split(r'admin\s+learngeneral', message.content, flags=re.IGNORECASE)[1].strip().rstrip(".")
+                if raw_fact:
+                    def _manual_gen(gen_list):
+                        if not isinstance(gen_list, list):
+                            gen_list = []
+                        if not is_duplicate_fact(raw_fact, gen_list):
+                            gen_list.append(raw_fact)
+                        return gen_list
+                    update_json_file(general_memory_file, [], _manual_gen)
+                    await message.channel.send(f"🌐 Saved shared general fact: `{raw_fact}`")
                 return
             elif "admin learn" in content_lower:
                 raw_fact = re.split(r'admin\s+learn', message.content, flags=re.IGNORECASE)[1].strip().rstrip(".")
@@ -533,6 +590,7 @@ def run_bot(
                         removed_count += (len(ltm_list) - len(kept))
                         return kept
                     update_json_file(long_term_memory_file, [], _forget_ltm)
+                    update_json_file(general_memory_file, [], _forget_ltm)
 
                     def _forget_uprof(uprof_dict):
                         nonlocal removed_count
@@ -599,19 +657,23 @@ def run_bot(
         directed_at_other_bot = is_command_directed_at_other_bot(
             clean_content, message, client.user.id, client.user.display_name, keywords, shared_image_cache_file
         )
+        addressed_bot_name = detect_addressed_bot_name(
+            clean_content, message, client.user.id, client.user.display_name, keywords, shared_image_cache_file
+        )
+        if not addressed_bot_name and ref_message and getattr(ref_message.author, "bot", False):
+            addressed_bot_name = ref_message.author.display_name.strip()
 
         chat_memory = load_json_file(chat_memory_file, {})
         chat_history_list = chat_memory.get(channel_id, [])
 
         is_explicit_trigger = client.user.mentioned_in(message) or has_keyword or replied_to_self
-        
-        # Explicitly calling the bot revives the active window state
-        if is_explicit_trigger:
+
+        if is_explicit_trigger and not directed_at_other_bot:
             channel_followup_state[channel_id] = {
                 "timestamp": time.time(),
                 "turns_used": 0,
                 "active": True,
-                "bot_msg_id": "" 
+                "bot_msg_id": ""
             }
 
         is_contextual_followup = False
@@ -636,7 +698,7 @@ def run_bot(
             if is_contextual_followup and not reply_context_str:
                 reply_context_str = followup_context_str
 
-        is_relevant_trigger = is_explicit_trigger or is_contextual_followup
+        is_relevant_trigger = (is_explicit_trigger and not directed_at_other_bot) or is_contextual_followup
 
         bot_streak = 0
         if is_author_bot:
@@ -659,7 +721,7 @@ def run_bot(
         elif is_author_bot and (bot_streak >= 2 or time_since_last_b2b < bot_to_bot_cooldown):
             pass
         else:
-            will_respond = is_relevant_trigger or (random.random() < current_resp_chance)
+            will_respond = is_relevant_trigger or (not directed_at_other_bot and random.random() < current_resp_chance)
 
         # Vision Prep
         image_desc = ""
@@ -733,9 +795,11 @@ def run_bot(
         other_bots_meta = get_other_active_bots(shared_image_cache_file, client.user.id, guild_members)
         other_bot_kw_set = set()
         other_bot_names_set = set()
+        other_bot_display_list = []
         for ob in other_bots_meta:
             if ob.get("display_name"):
                 other_bot_names_set.add(ob["display_name"].lower())
+                other_bot_display_list.append(ob["display_name"])
             for kw_item in ob.get("keywords", []):
                 if len(kw_item) >= 3:
                     other_bot_kw_set.add(kw_item.lower())
@@ -747,9 +811,9 @@ def run_bot(
 
         effective_emoji_chance = current_emoji_chance * (0.20 if is_author_bot else 1.0)
         reacted_emoji = None
-        react_task = None 
+        react_task = None
         should_react = (is_explicit_trigger and not is_author_bot and current_emoji_chance > 0) or (random.random() < effective_emoji_chance)
-        
+
         if should_react:
             react_task = asyncio.create_task(
                 auto_react(
@@ -777,17 +841,21 @@ def run_bot(
         if image_desc:
             text_context += f"\n{image_desc}"
 
+        user_mem_entry = {
+            "role": "user",
+            "content": text_context,
+            "message_id": message.id,
+            "author_id": message.author.id,
+            "author_is_bot": is_author_bot,
+            "author_name": message.author.display_name
+        }
+        if addressed_bot_name:
+            user_mem_entry["addressed_bot"] = addressed_bot_name
+
         upsert_chat_memory_entry(
             chat_memory_file,
             channel_id,
-            {
-                "role": "user",
-                "content": text_context,
-                "message_id": message.id,
-                "author_id": message.author.id,
-                "author_is_bot": is_author_bot,
-                "author_name": message.author.display_name
-            },
+            user_mem_entry,
             max_history_length
         )
 
@@ -832,7 +900,7 @@ def run_bot(
 
                 trigger_mode_str = "contextual follow-up" if is_contextual_followup else "trigger"
                 print(f"[{client.user.display_name}] [INFO] Generating response ({trigger_mode_str}) to {message.author.display_name} in #{message.channel.name}")
-                
+
                 final_reply = ""
                 final_gif = None
                 sys_error = None
@@ -840,6 +908,8 @@ def run_bot(
                 image_file = None
                 voice_file = None
                 img_prompt = None
+                meme_top_text = ""
+                meme_bottom_text = ""
                 voice_text = None
                 gif_search_term = None
                 img_err = None
@@ -855,11 +925,16 @@ def run_bot(
                         now_str = datetime.now().strftime("%A, %I:%M %p")
                         dynamic_system["content"] += f"\n\n### Current Time Context:\n- Local Server Time: {now_str}"
                         dynamic_system["content"] += build_glitch_awareness_rules(client.user.display_name)
-                        dynamic_system["content"] += build_memory_attribution_rules()
+                        dynamic_system["content"] += build_memory_attribution_rules(client.user.display_name, other_bot_display_list)
+                        dynamic_system["content"] += build_media_and_meme_rules(ch_enable_image_gen, ch_enable_gifs)
 
                         long_term_memory = load_json_file(long_term_memory_file, [])
                         if long_term_memory:
-                            dynamic_system["content"] += "\n\n### Learned Server Knowledge:\n" + "\n".join(f"- {f}" for f in long_term_memory[-40:])
+                            dynamic_system["content"] += "\n\n### Learned Server Knowledge (Server-Specific Lore):\n" + "\n".join(f"- {f}" for f in long_term_memory[-35:])
+
+                        general_memory = load_json_file(general_memory_file, [])
+                        if general_memory:
+                            dynamic_system["content"] += "\n\n### Shared General Knowledge (Universal Trivia & Facts):\n" + "\n".join(f"- {f}" for f in general_memory[-35:])
 
                         chat_memory = load_json_file(chat_memory_file, {})
                         raw_history = copy.deepcopy(chat_memory.get(channel_id, [])[-context_window:])
@@ -869,6 +944,10 @@ def run_bot(
                             if m.get("role") == "system":
                                 continue
                             if m.get("author_is_bot") or m.get("role") == "assistant" or m.get("author_id") != message.author.id:
+                                break
+                            # Do not coalesce an earlier line if it was explicitly addressed to a DIFFERENT bot!
+                            m_addr = m.get("addressed_bot")
+                            if m_addr and m_addr.lower() != client.user.display_name.lower():
                                 break
                             if m.get("role") == "user" and isinstance(m.get("content"), str):
                                 coalesced_user_lines.append(m["content"])
@@ -899,9 +978,9 @@ def run_bot(
                                 f"- {r.get('bot_name')}: '{r.get('prompt')}'" for r in gen_records[-5:]
                             )
                             dynamic_system["content"] += (
-                                "\n\n### Recently Generated Bot Images (DO NOT REPEAT OR COPY THESE VISUAL CONCEPTS):\n"
+                                "\n\n### Recently Generated Bot Images/Memes (DO NOT REPEAT OR COPY THESE VISUAL CONCEPTS):\n"
                                 f"{recent_prompts_list}\n"
-                                "If you generate an image, it MUST use a completely different scene, angle, setting, and visual concept."
+                                "If you generate an image or meme, it MUST use a completely different scene, angle, setting, and visual concept."
                             )
 
                         api_messages = build_api_messages_from_history(
@@ -917,8 +996,14 @@ def run_bot(
                                 )
                             })
 
+                        is_explicit_meme_req = bool(
+                            ch_enable_image_gen
+                            and not directed_at_other_bot
+                            and EXPLICIT_MEME_REQ_REGEX.search(combined_recent_prompt)
+                        )
                         is_explicit_img_req = bool(
                             ch_enable_image_gen
+                            and not is_explicit_meme_req
                             and not directed_at_other_bot
                             and EXPLICIT_IMAGE_REQ_REGEX.search(combined_recent_prompt)
                         )
@@ -930,6 +1015,7 @@ def run_bot(
                         is_explicit_gif_req = bool(
                             ch_enable_gifs
                             and not is_explicit_img_req
+                            and not is_explicit_meme_req
                             and not directed_at_other_bot
                             and EXPLICIT_GIF_REQ_REGEX.search(combined_recent_prompt)
                         )
@@ -939,7 +1025,16 @@ def run_bot(
                                 "role": "system",
                                 "content": (
                                     "System Directive: The user's media request is addressed to another bot while mentioning you as the subject. "
-                                    "Respond with a short, witty in-character remark, and DO NOT output [IMAGE_GEN:] or [VOICE_MSG:] so the requested bot can handle the generation."
+                                    "Respond with a short, witty in-character remark, and DO NOT output [IMAGE_GEN:], [MEME_GEN:], or [VOICE_MSG:] so the requested bot can handle the generation."
+                                )
+                            })
+                        elif is_explicit_meme_req:
+                            api_messages.append({
+                                "role": "system",
+                                "content": (
+                                    "System Directive: The user is asking you to generate a meme! "
+                                    "You MUST append `[MEME_GEN: vivid visual description of the scene without text | TOP CAPTION | BOTTOM PUNCHLINE]` at the end of your response. "
+                                    "Do NOT output `[GIF:]` or `[IMAGE_GEN:]` in the same message."
                                 )
                             })
                         elif is_explicit_img_req:
@@ -947,8 +1042,8 @@ def run_bot(
                                 "role": "system",
                                 "content": (
                                     "System Directive: The user is explicitly asking you to generate an image. "
-                                    "You MUST append a creative, persona-appropriate `[IMAGE_GEN: detailed visual description]` tag at the end of your response. "
-                                    "Do NOT output `[GIF:]` in the same message, and do NOT copy any previous image prompt or media description."
+                                    "You MUST append a creative, persona-appropriate `[IMAGE_GEN: detailed visual description]` (or `[MEME_GEN: visual scene | TOP TEXT | BOTTOM TEXT]` if comedic) tag at the end of your response. "
+                                    "Do NOT output `[GIF:]` in the same message."
                                 )
                             })
                         elif is_explicit_voice_req:
@@ -1123,13 +1218,34 @@ def run_bot(
                                         return uprof_data
                                     update_json_file(user_profiles_file, {}, _save_user_facts)
 
-                            learn_matches = LEARN_EXTRACT_REGEX.findall(reply)
-                            if learn_matches:
+                            raw_gen_matches = LEARN_GENERAL_EXTRACT_REGEX.findall(reply)
+                            raw_srv_matches = LEARN_EXTRACT_REGEX.findall(reply)
+                            routed_srv_facts, routed_gen_facts = route_server_vs_general_facts(
+                                raw_server_facts=raw_srv_matches,
+                                raw_general_facts=raw_gen_matches,
+                                recent_users=recent_users | set(user_profiles.keys()),
+                                other_bot_names=other_bot_names_set,
+                                my_bot_name=client.user.display_name
+                            )
+
+                            if routed_gen_facts:
+                                def _save_general_facts(gen_data):
+                                    if not isinstance(gen_data, list):
+                                        gen_data = []
+                                    for clean_gfact in routed_gen_facts:
+                                        if clean_gfact and not is_duplicate_fact(clean_gfact, gen_data):
+                                            gen_data.append(clean_gfact)
+                                            if len(gen_data) > 80:
+                                                gen_data = gen_data[-80:]
+                                            learned_notifications.append(f"learned general fact: {clean_gfact}")
+                                    return gen_data
+                                update_json_file(general_memory_file, [], _save_general_facts)
+
+                            if routed_srv_facts:
                                 def _save_ltm_facts(ltm_data):
                                     if not isinstance(ltm_data, list):
                                         ltm_data = []
-                                    for learned_fact in learn_matches:
-                                        clean_fact = learned_fact.strip().rstrip(".")
+                                    for clean_fact in routed_srv_facts:
                                         if clean_fact and not is_duplicate_fact(clean_fact, ltm_data):
                                             ltm_data.append(clean_fact)
                                             if len(ltm_data) > 60:
@@ -1139,23 +1255,38 @@ def run_bot(
                                 update_json_file(long_term_memory_file, [], _save_ltm_facts)
 
                             if ch_enable_image_gen and not directed_at_other_bot:
-                                img_gen_match = (
-                                    IMAGE_GEN_REGEX.search(reply)
-                                    or UNCLOSED_IMAGE_GEN_REGEX.search(reply)
-                                    or FALLBACK_IMAGE_NOTE_REGEX.search(reply)
-                                )
-                                if img_gen_match:
-                                    img_prompt = img_gen_match.group(1).strip()
+                                meme_gen_match = MEME_GEN_REGEX.search(reply) or UNCLOSED_MEME_GEN_REGEX.search(reply)
+                                if meme_gen_match:
+                                    img_prompt, meme_top_text, meme_bottom_text = parse_meme_gen_tag(meme_gen_match.group(1))
+                                else:
+                                    img_gen_match = (
+                                        IMAGE_GEN_REGEX.search(reply)
+                                        or UNCLOSED_IMAGE_GEN_REGEX.search(reply)
+                                        or FALLBACK_IMAGE_NOTE_REGEX.search(reply)
+                                    )
+                                    if img_gen_match:
+                                        raw_img_tag = img_gen_match.group(1).strip()
+                                        if "|" in raw_img_tag:
+                                            img_prompt, meme_top_text, meme_bottom_text = parse_meme_gen_tag(raw_img_tag)
+                                        else:
+                                            img_prompt = raw_img_tag
 
                                 other_bot_just_generated_on_msg = any(
                                     r.get("trigger_msg_id") == message.id and r.get("bot_id") != client.user.id
                                     for r in gen_records
                                 )
-                                if img_prompt and other_bot_just_generated_on_msg and not is_explicit_img_req:
-                                    print(f"[{client.user.display_name}] [INFO] Skipping redundant unsolicited image because another bot already generated one for this message.")
+                                if img_prompt and other_bot_just_generated_on_msg and not (is_explicit_img_req or is_explicit_meme_req):
+                                    print(f"[{client.user.display_name}] [INFO] Skipping redundant unsolicited image/meme because another bot already generated one for this message.")
                                     img_prompt = None
+                                    meme_top_text = ""
+                                    meme_bottom_text = ""
 
-                                if not img_prompt and (is_explicit_img_req or (is_relevant_trigger and BOT_IMAGE_PROMISE_REGEX.search(reply))):
+                                if not img_prompt and is_explicit_meme_req:
+                                    print(f"[{client.user.display_name}] [INFO] Synthesizing missing [MEME_GEN:] spec for explicit meme request...")
+                                    img_prompt, meme_top_text, meme_bottom_text = await synthesize_missing_meme_spec(
+                                        reply, clean_content, gen_records, client.user.display_name, persona_summary, api_key, text_model, api_url
+                                    )
+                                elif not img_prompt and (is_explicit_img_req or (is_relevant_trigger and BOT_IMAGE_PROMISE_REGEX.search(reply))):
                                     print(f"[{client.user.display_name}] [INFO] Synthesizing missing [IMAGE_GEN:] prompt for explicit image request...")
                                     img_prompt = await synthesize_missing_image_prompt(
                                         reply, clean_content, gen_records, client.user.display_name, persona_summary, api_key, text_model, api_url
@@ -1167,10 +1298,13 @@ def run_bot(
                                     )
 
                             reply = LEARN_USER_STRIP_REGEX.sub('', reply).strip()
+                            reply = LEARN_GENERAL_STRIP_REGEX.sub('', reply).strip()
                             reply = LEARN_STRIP_REGEX.sub('', reply).strip()
                             reply = INTERNAL_REACT_STRIP_REGEX.sub('', reply).strip()
                             reply = EMOJI_REACT_STRIP_REGEX.sub('', reply).strip()
                             reply = IMAGE_DESC_STRIP_REGEX.sub('', reply).strip()
+                            reply = MEME_GEN_REGEX.sub('', reply).strip()
+                            reply = UNCLOSED_MEME_GEN_REGEX.sub('', reply).strip()
                             reply = IMAGE_GEN_REGEX.sub('', reply).strip()
                             reply = UNCLOSED_IMAGE_GEN_REGEX.sub('', reply).strip()
                             reply = FALLBACK_IMAGE_NOTE_REGEX.sub('', reply).strip()
@@ -1191,7 +1325,8 @@ def run_bot(
                             img_task = (
                                 generate_image_attachment(
                                     img_prompt, image_gen_model, api_key, client.user.id,
-                                    client.user.display_name, channel_id, message.id, shared_image_cache_file
+                                    client.user.display_name, channel_id, message.id, shared_image_cache_file,
+                                    meme_top_text=meme_top_text, meme_bottom_text=meme_bottom_text
                                 )
                                 if (ch_enable_image_gen and img_prompt)
                                 else asyncio.sleep(0, result=(None, None))
@@ -1264,8 +1399,10 @@ def run_bot(
                     )
                 else:
                     files_to_send = []
+                    is_meme_output = bool(meme_top_text.strip() or meme_bottom_text.strip())
                     if image_file:
-                        files_to_send.append(discord.File(fp=image_file, filename="generated_image.png"))
+                        fname = "generated_meme.png" if is_meme_output else "generated_image.png"
+                        files_to_send.append(discord.File(fp=image_file, filename=fname))
                     if voice_file:
                         files_to_send.append(discord.File(fp=voice_file, filename="voice_message.mp3"))
 
@@ -1298,8 +1435,9 @@ def run_bot(
                     )
 
                     if sent_msg and img_prompt and image_file:
+                        caption_desc = f" with meme captions '{meme_top_text} / {meme_bottom_text}'" if is_meme_output else ""
                         def _precache_bot_img(c):
-                            c[sent_msg.id] = f"[Attached Media Description: Generated image by {client.user.display_name} showing: {img_prompt}]"
+                            c[sent_msg.id] = f"[Attached Media Description: Generated {'meme' if is_meme_output else 'image'} by {client.user.display_name} showing: {img_prompt}{caption_desc}]"
                             return c
                         update_json_file(shared_image_cache_file, {}, _precache_bot_img)
 
@@ -1324,11 +1462,12 @@ def run_bot(
                             }
 
                         clean_mem_reply = ERROR_REPLY_STRIP_REGEX.sub('', final_reply or '').strip()
-                        clean_mem_reply = re.sub(r'\*\([^)]*learned (?:server fact|about).*?\)\*', '', clean_mem_reply, flags=re.IGNORECASE).strip()
-                        
+                        clean_mem_reply = re.sub(r'\*\([^)]*learned (?:server fact|general fact|about).*?\)\*', '', clean_mem_reply, flags=re.IGNORECASE).strip()
+
                         memory_text = clean_mem_reply if clean_mem_reply else "[Sent media]"
                         if img_prompt and image_file:
-                            memory_text = f"{memory_text}\n[Attached Media Description: Generated image by {client.user.display_name} showing: {img_prompt}]".strip()
+                            caption_desc = f" with meme captions '{meme_top_text} / {meme_bottom_text}'" if is_meme_output else ""
+                            memory_text = f"{memory_text}\n[Attached Media Description: Generated {'meme' if is_meme_output else 'image'} by {client.user.display_name} showing: {img_prompt}{caption_desc}]".strip()
 
                         memory_entry = {
                             "role": "assistant",
@@ -1339,7 +1478,10 @@ def run_bot(
                             "author_is_bot": True
                         }
                         if img_prompt and image_file:
-                            memory_entry["img_prompt"] = img_prompt
+                            if is_meme_output:
+                                memory_entry["meme_spec"] = f"{img_prompt} | {meme_top_text} | {meme_bottom_text}"
+                            else:
+                                memory_entry["img_prompt"] = img_prompt
                         if gif_search_term and final_gif:
                             memory_entry["gif_query"] = gif_search_term
                         if voice_text and voice_file:
@@ -1388,13 +1530,12 @@ def run_bot(
                             max_history_length
                         )
 
-                    # Finally, await the background reaction task so we can save it to memory
                     if react_task:
                         try:
                             reacted_emoji = await react_task
                         except Exception:
                             pass
-                            
+
                     if reacted_emoji:
                         upsert_chat_memory_entry(
                             chat_memory_file,
