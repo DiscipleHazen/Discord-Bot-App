@@ -7,7 +7,7 @@
 ![DeepInfra](https://img.shields.io/badge/DeepInfra-Multimodal_AI-000000?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
-A production-grade, distributed multi-agent Discord bot framework written in Python. Engineered to run multiple autonomous, distinct AI agents concurrently within the same Discord channels, this system features cross-process atomic state synchronization with OS-level dead-PID lock recovery, an IDF-weighted 3-tier memory verification pipeline, multimodal computer vision (including motion-aware 2x2 video/GIF keyframe storyboards with Laplacian sharpness scoring), luminance-adaptive meme typography, and director-mode neural Text-to-Speech (TTS). (This was made with the help of Gemini Pro/Argon)
+A distributed multi-agent Discord bot framework written in Python. Engineered to run multiple autonomous, distinct AI agents concurrently within the same Discord channels, this system features cross-process atomic state synchronization with OS-level dead-PID lock recovery, an IDF-weighted 3-tier memory verification pipeline, multimodal computer vision (including motion-aware 2x2 video/GIF keyframe storyboards with Laplacian sharpness scoring), luminance-adaptive meme typography, and director-mode neural Text-to-Speech (TTS). (This was made with the help of Gemini Pro/Argon)
 
 ---
 
