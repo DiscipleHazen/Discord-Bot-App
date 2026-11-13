@@ -18,8 +18,27 @@ EMPHASIS_NON_EMOTE_WORDS = {
 }
 
 LEAKED_CHAT_PREFIX_REGEX = re.compile(
-    r'^\s*\[[a-zA-Z0-9_\-\.\s]{1,40}(?:\(speaking to [^\)]+\))?\]:\s*',
+    r'(?m)^\s*\[[a-zA-Z0-9_\-\.\s]{1,40}(?:\(speaking to [^\)]+\))?\]:\s*',
     re.IGNORECASE
+)
+
+# Detects when the LLM hallucinates a second speaker turn in the middle of its reply
+# (e.g., `[silly7722 (speaking to Guild Assistant, NOT to Malfoid)]: ...`,
+# `*Carzen: yeah they worked again* : ...`, `: Oh, come off it...`, or `[No response—...]`)
+HALLUCINATED_MULTI_TURN_CUTOFF_REGEX = re.compile(
+    r'(?:'
+    r'\n\s*\[[a-zA-Z0-9_\-\.\s]{2,40}(?:\(speaking to [^\)]+\))?\]:'
+    r'|\s+\[[a-zA-Z0-9_\-\.\s]{2,40}\(speaking to [^\)]+\)\]:'
+    r'|\s+\*?[A-Z][a-zA-Z0-9_\-]{1,25}:\s+[^:\n]{2,80}?\*?\s*:\s+'
+    r'|\s+:\s+(?:Oh\b|Clearly\b|Honestly\b|Wait\b|Well\b|Look\b|Please\b| No\b|Yes\b|I\b|You\b|\*[a-zA-Z])'
+    r'|\s*\[?\*?\[?No response[\—\-\:][^\n\]]*\]?\*?'
+    r')',
+    re.IGNORECASE
+)
+
+# Strips echoed short user inputs at the very start of the bot's reply (e.g. `erm : *glances up*` or `um : *sighs*`)
+ECHOED_INPUT_PREFIX_REGEX = re.compile(
+    r'^\s*(?:[a-zA-Z0-9_\-]{1,20}\s*:\s*)+(?=\*|[A-Z"\'])'
 )
 
 LEAKED_CONTEXT_TAG_REGEX = re.compile(
@@ -69,7 +88,6 @@ def extract_and_strip_voice_msg(text: str) -> tuple[str | None, str]:
         voice_content = text[content_start:].strip()
         cleaned_text = text[:start_idx].strip()
 
-    # Strip any stray backticks that wrapped the [VOICE_MSG: ...] block
     cleaned_text = re.sub(r'`+\s*`+', '', cleaned_text).strip()
     cleaned_text = re.sub(r'`+$', '', cleaned_text).strip()
     return voice_content, cleaned_text
@@ -204,9 +222,10 @@ def convert_bracket_emotes_to_asterisks(text: str) -> str:
         lower_inner = inner.lower()
         if lower_inner.startswith((
             "http", "image_gen", "meme_gen", "voice_msg", "gif",
-            "attached", "contains", "system", "replying", "addressed", "directed", "learn"
-        )):
-            return match.group(0)
+            "attached", "contains", "system", "replying", "addressed", "directed",
+            "learn", "no response"
+        )) or "speaking to" in lower_inner:
+            return ""
         return f"*{inner}*"
 
     return BRACKET_EMOTE_REGEX.sub(_replace, text)
@@ -265,9 +284,9 @@ def _prune_excessive_inline_emotes(text: str, max_emotes: int = 2) -> str:
 
 def clean_and_compact_reply(reply: str) -> str:
     """
-    Cleans stray markdown artifacts, leaked context headers, and system notes,
-    converts bracket emotes to asterisks, prunes excessive stage directions,
-    and removes blank line spacing so bot outputs read like natural Discord messages.
+    Cleans stray markdown artifacts, leaked context headers, echoed user inputs,
+    and hallucinated multi-turn scripts, converts bracket emotes to asterisks,
+    prunes excessive stage directions, and removes blank line spacing.
     """
     if not reply:
         return ""
@@ -278,6 +297,24 @@ def clean_and_compact_reply(reply: str) -> str:
     reply = LEARN_STRIP_REGEX.sub('', reply)
     reply = IMAGE_DESC_STRIP_REGEX.sub('', reply)
     reply = LEAKED_CONTEXT_TAG_REGEX.sub('', reply)
+
+    # 1. Strip any leading `[BotName]:` header at the start of the response
+    reply = re.sub(
+        r'^\s*\[[a-zA-Z0-9_\-\.\s]{1,40}(?:\(speaking to [^\)]+\))?\]:\s*',
+        '',
+        reply,
+        flags=re.IGNORECASE
+    ).strip()
+
+    # 2. Strip echoed short user input prefixes like `erm : *glances up*` or `um : *sighs*`
+    reply = ECHOED_INPUT_PREFIX_REGEX.sub('', reply).strip()
+
+    # 3. Truncate any hallucinated multi-turn continuation (e.g. `[silly7722 (speaking to...)]: ...`,
+    # `*Carzen: yeah they worked again* : ...`, `: Oh, come off it...`, or `[No response—...]`)
+    cutoff_match = HALLUCINATED_MULTI_TURN_CUTOFF_REGEX.search(reply)
+    if cutoff_match and cutoff_match.start() > 8:
+        reply = reply[:cutoff_match.start()].strip()
+
     reply = LEAKED_CHAT_PREFIX_REGEX.sub('', reply)
     reply = re.sub(r'\*\s*\(System Note:.*?\)\s*\*?\n?', '', reply, flags=re.IGNORECASE)
     reply = re.sub(r'\*\s*\([^)]*learned (?:server fact|general fact|about).*?\)\s*\*?\n?', '', reply, flags=re.IGNORECASE)
@@ -291,6 +328,7 @@ def clean_and_compact_reply(reply: str) -> str:
     reply = re.sub(r'(?:\s*\*{2,}\s*)+$', '', reply).strip()
 
     lines = [LEAKED_CHAT_PREFIX_REGEX.sub('', line.strip()).strip() for line in reply.split('\n') if line.strip()]
+    lines = [ECHOED_INPUT_PREFIX_REGEX.sub('', line).strip() for line in lines if line]
     lines = [line for line in lines if line]
     if not lines:
         return ""
@@ -337,7 +375,6 @@ def parse_meme_gen_tag(raw_meme_str: str) -> tuple[str, str, str]:
     if bottom_text.lower() in placeholder_values:
         bottom_text = ""
 
-    # If the LLM only provided 1 caption block (2 pipe parts total) and it has a natural setup/punchline split
     if top_text and not bottom_text and len(top_text) > 30:
         if " / " in top_text:
             sp = top_text.split(" / ", 1)

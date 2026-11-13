@@ -122,7 +122,11 @@ ERROR_REPLY_CAPTURE_REGEX = re.compile(
 )
 
 # Bracket emote conversion & Asterisk emote extraction (for anti-repetition tracking)
-BRACKET_EMOTE_REGEX = re.compile(r'\[([a-zA-Z][a-zA-Z0-9\s,\'\-\.~!]{1,45})\](?!\()')
+BRACKET_EMOTE_REGEX = re.compile(r'\[([a-zA-Z][a-zA-Z0-9\s,\'\-\.~!]{1,45})\](?![\(\:])')
+BARE_FILLER_UTTERANCE_REGEX = re.compile(
+    r'^[\s\W]*(?:erm+|um+|uh+|hmm+|hm+|ah+|oh+|eh+|meh|huh|wat|wut|lol+|lmao+|lmfao+|rofl|k+|ok+|okay|bruh|bro|welp|oof|yikes|rip|ikr|idk|tbh|ngl|wow|whoa|woah)[\s\W]*$',
+    re.IGNORECASE
+)
 ASTERISK_EMOTE_EXTRACT_REGEX = re.compile(r'\*([a-zA-Z][^*\n]{2,55})\*')
 
 # Explicit user media intent detection (handles natural phrasing & typos like "generate and image of")

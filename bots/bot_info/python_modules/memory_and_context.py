@@ -536,6 +536,12 @@ def build_api_messages_from_history(
 
     micro_impulse = random.choice(SPONTANEOUS_MICRO_MOMENTS)
     variety_rules.append(f"- **SPONTANEOUS CONVERSATIONAL IMPULSE**: {micro_impulse}")
+    variety_rules.append(
+        f"- **SINGLE-TURN OUTPUT ONLY (CRITICAL)**: Output ONLY your own single response as {bot_display_name}. "
+        "NEVER echo the user's message at the start (e.g., never write 'erm : ...' or 'um : ...'), "
+        "NEVER write dialogue or responses for other users or bots (e.g., never write '[Username]: ...' or 'Username: ...'), "
+        "and NEVER write meta-stage notes like '[No response—...]'!"
+    )
 
     if variety_rules:
         api_messages[0]["content"] += (
@@ -662,12 +668,43 @@ def route_server_vs_general_facts(
         if len(part) >= 3:
             server_indicators.add(part)
 
+    bot_name_tokens = set()
+    for b in (other_bot_names or set()):
+        if b:
+            for part in re.findall(r'[a-z0-9]+', str(b).lower()):
+                if len(part) >= 3 and part not in ("bot", "the", "guild"):
+                    bot_name_tokens.add(part)
+    for part in re.findall(r'[a-z0-9]+', (my_bot_name or "").lower()):
+        if len(part) >= 3 and part not in ("bot", "the", "guild"):
+            bot_name_tokens.add(part)
+
+    meta_banter_phrases = (
+        "memory-clearing", "memory clearing", "memory wipe", "memory wipes",
+        "existential recursion", "amnesia ritual", "in-joke", "in-jokes",
+        "claims to have archived", "discord server members include"
+    )
+
+    def _is_bot_banter_or_meta(fact_str: str, is_gen: bool) -> bool:
+        f_low = fact_str.lower()
+        if any(mp in f_low for mp in meta_banter_phrases):
+            return True
+        f_words = set(re.findall(r'[a-z0-9]+', f_low))
+        if is_gen and (f_words & bot_name_tokens):
+            return True
+        if (f_words & bot_name_tokens) and any(w in f_low for w in ("claims", "joked", "said", "archived", "ritual", "recursion")):
+            return True
+        return False
+
     final_server_facts = []
-    final_general_facts = [f.strip().rstrip(".") for f in (raw_general_facts or []) if f and f.strip()]
+    final_general_facts = []
+    for gf in (raw_general_facts or []):
+        clean_gf = gf.strip().rstrip(".")
+        if clean_gf and not _is_bot_banter_or_meta(clean_gf, is_gen=True):
+            final_general_facts.append(clean_gf)
 
     for fact in (raw_server_facts or []):
         clean_f = fact.strip().rstrip(".")
-        if not clean_f:
+        if not clean_f or _is_bot_banter_or_meta(clean_f, is_gen=False):
             continue
         words = set(re.findall(r'[a-z0-9]+', clean_f.lower()))
         if words & server_indicators:

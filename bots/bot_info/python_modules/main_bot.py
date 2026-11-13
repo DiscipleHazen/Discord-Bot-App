@@ -174,7 +174,7 @@ def run_bot(
     chance_to_respond: float = 0.05, random_emoji_chance: float = 0.45, default_random_interval: int = 0,
     api_url: str = "https://api.deepinfra.com/v1/openai/chat/completions", keywords: list = None,
     emoji_reaction_hint: str = "", default_voice_role: str = "", default_voice_style: str = "",
-    followup_window_messages: int = 2, max_followup_turns: int = 2, followup_timeout: float = 180.0
+    followup_window_messages: int = 2, max_followup_turns: int = 1, followup_timeout: float = 180.0
 ):
     api_url = sanitize_url(api_url)
     if not general_memory_file:
@@ -678,13 +678,21 @@ def run_bot(
 
         is_explicit_trigger = client.user.mentioned_in(message) or has_keyword or replied_to_self
 
-        if is_explicit_trigger and not directed_at_other_bot:
+        if is_explicit_trigger and not directed_at_other_bot and not is_author_bot:
             channel_followup_state[channel_id] = {
                 "timestamp": time.time(),
                 "turns_used": 0,
                 "active": True,
                 "bot_msg_id": ""
             }
+            def _set_active_followup_owner(c):
+                f_map = c.get("_active_followup_bot", {})
+                if not isinstance(f_map, dict):
+                    f_map = {}
+                f_map[channel_id] = client.user.id
+                c["_active_followup_bot"] = f_map
+                return c
+            update_json_file(shared_image_cache_file, {}, _set_active_followup_owner)
 
         is_contextual_followup = False
         followup_context_str = ""
@@ -1349,8 +1357,9 @@ def run_bot(
                                         return uprof_data
                                     update_json_file(user_profiles_file, {}, _save_user_facts)
 
-                            raw_gen_matches = LEARN_GENERAL_EXTRACT_REGEX.findall(reply)
-                            raw_srv_matches = LEARN_EXTRACT_REGEX.findall(reply)
+                            allow_fact_learning = (not is_author_bot and len(clean_content.split()) >= 3)
+                            raw_gen_matches = LEARN_GENERAL_EXTRACT_REGEX.findall(reply) if allow_fact_learning else []
+                            raw_srv_matches = LEARN_EXTRACT_REGEX.findall(reply) if allow_fact_learning else []
                             routed_srv_facts, routed_gen_facts = route_server_vs_general_facts(
                                 raw_server_facts=raw_srv_matches,
                                 raw_general_facts=raw_gen_matches,
@@ -1591,24 +1600,33 @@ def run_bot(
                         update_json_file(shared_image_cache_file, {}, _precache_bot_img)
 
                     if not is_error_reply:
-                        prev_turns_used = (
-                            channel_followup_state.get(channel_id, {}).get("turns_used", 0)
-                            if (is_contextual_followup and not is_explicit_trigger)
-                            else 0
-                        )
-                        new_turns_used = (prev_turns_used + 1) if (is_contextual_followup and not is_explicit_trigger) else 0
                         entry_msg_id = sent_msg.id if sent_msg else f"resp_{message.id}_{client.user.id}"
+                        if not is_author_bot:
+                            prev_turns_used = (
+                                channel_followup_state.get(channel_id, {}).get("turns_used", 0)
+                                if (is_contextual_followup and not is_explicit_trigger)
+                                else 0
+                            )
+                            new_turns_used = (prev_turns_used + 1) if (is_contextual_followup and not is_explicit_trigger) else 0
 
-                        if new_turns_used >= max_followup_turns:
-                            if channel_id in channel_followup_state:
-                                channel_followup_state[channel_id]["active"] = False
-                        else:
-                            channel_followup_state[channel_id] = {
-                                "timestamp": time.time(),
-                                "turns_used": new_turns_used,
-                                "active": True,
-                                "bot_msg_id": entry_msg_id
-                            }
+                            if max_followup_turns <= 0 or new_turns_used >= max_followup_turns:
+                                if channel_id in channel_followup_state:
+                                    channel_followup_state[channel_id]["active"] = False
+                            else:
+                                channel_followup_state[channel_id] = {
+                                    "timestamp": time.time(),
+                                    "turns_used": new_turns_used,
+                                    "active": True,
+                                    "bot_msg_id": entry_msg_id
+                                }
+                                def _claim_followup_owner_after_reply(c):
+                                    f_map = c.get("_active_followup_bot", {})
+                                    if not isinstance(f_map, dict):
+                                        f_map = {}
+                                    f_map[channel_id] = client.user.id
+                                    c["_active_followup_bot"] = f_map
+                                    return c
+                                update_json_file(shared_image_cache_file, {}, _claim_followup_owner_after_reply)
 
                         clean_mem_reply = ERROR_REPLY_STRIP_REGEX.sub('', final_reply or '').strip()
                         clean_mem_reply = re.sub(r'\*\([^)]*learned (?:server fact|general fact|about).*?\)\*', '', clean_mem_reply, flags=re.IGNORECASE).strip()

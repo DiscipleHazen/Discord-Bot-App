@@ -133,9 +133,12 @@ DEFAULT_VOICE_ROLE = (
     "Guidance: Speak at a measured, deliberate pace with crisp articulation and subtle world-weary pauses."
 )
 DEFAULT_VOICE_STYLE = "Serious"
-FOLLOWUP_WINDOW_MESSAGES = 3
-MAX_FOLLOWUP_TURNS = 2
-FOLLOWUP_TIMEOUT = 180.0
+# Follow-Up Controls:
+# - MAX_FOLLOWUP_TURNS: How many un-tagged follow-up replies the bot can send after being pinged (0 = only reply when pinged/replied to, 1 = 1 follow-up, 2 = 2 follow-ups)
+# - FOLLOWUP_WINDOW_MESSAGES: How many recent messages to look back for follow-up context
+FOLLOWUP_WINDOW_MESSAGES = 2
+MAX_FOLLOWUP_TURNS = 1
+FOLLOWUP_TIMEOUT = 120.0
 
 if __name__ == "__main__":
     system_prompt = get_system_prompt(ENABLE_IMAGE_GEN, ENABLE_VOICE, ENABLE_GIFS)

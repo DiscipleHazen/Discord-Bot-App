@@ -4,7 +4,7 @@ import discord
 
 from config import (
     ERROR_REPLY_STRIP_REGEX, IMAGE_DESC_STRIP_REGEX, IMAGE_DESC_EXTRACT_REGEX,
-    URL_REGEX, TOPIC_INTEREST_CUES_REGEX, STOPWORDS
+    URL_REGEX, TOPIC_INTEREST_CUES_REGEX, STOPWORDS, BARE_FILLER_UTTERANCE_REGEX
 )
 from core_system import load_json_file, update_json_file, post_with_backoff
 from memory_and_context import normalize_tokens
@@ -472,6 +472,20 @@ async def resolve_contextual_followup(
         channel_followup_state.pop(channel_id, None)
         return False, ""
 
+    # Ignore bare 1-word filler utterances ('erm', 'um', 'uh', 'lol', 'ok', 'bruh')
+    # so bots don't pounce on non-sequitur filler sounds without an explicit mention/reply
+    if BARE_FILLER_UTTERANCE_REGEX.match(clean_content or ""):
+        return False, ""
+
+    # Check if another bot was explicitly addressed more recently in this channel
+    cache_meta = load_json_file(shared_image_cache_file, {})
+    active_f_map = cache_meta.get("_active_followup_bot", {})
+    if isinstance(active_f_map, dict):
+        active_owner_id = active_f_map.get(channel_id, active_f_map.get(str(channel_id)))
+        if active_owner_id and active_owner_id != my_bot_id:
+            channel_followup_state.pop(channel_id, None)
+            return False, ""
+
     if state:
         if not state.get("active", True) or (now - state.get("timestamp", 0)) > followup_timeout or state.get("turns_used", 0) >= max_followup_turns:
             channel_followup_state.pop(channel_id, None)
@@ -525,11 +539,15 @@ async def resolve_contextual_followup(
     combined_bot_context = f"{clean_bot_text} [Visual shown: {bot_visual_context[:140]}]" if bot_visual_context else clean_bot_text
 
     if distance_from_end >= 2 and len(recent_window) >= 2:
-        intervening_msg = recent_window[-1]
-        if intervening_msg.get("author_is_bot") and intervening_msg.get("author_id") != my_bot_id:
+        intervening_msgs = recent_window[-(distance_from_end - 1):]
+        other_bot_intervened = [
+            im for im in intervening_msgs
+            if im.get("author_is_bot") and im.get("author_id") != my_bot_id
+        ]
+        if other_bot_intervened:
             user_tokens = normalize_tokens(clean_content)
             my_bot_tokens = normalize_tokens(combined_bot_context)
-            other_bot_tokens = normalize_tokens(intervening_msg.get("content", ""))
+            other_bot_tokens = normalize_tokens(" ".join(im.get("content", "") for im in other_bot_intervened))
             overlap_me = len(user_tokens & my_bot_tokens)
             overlap_other = len(user_tokens & other_bot_tokens)
             if overlap_me == 0 or overlap_me <= overlap_other:
@@ -553,6 +571,31 @@ async def resolve_contextual_followup(
             )
             if not is_rel:
                 return False, ""
+
+    # Atomically claim the follow-up slot for this specific user message_id so two bots
+    # NEVER double-reply to the same un-tagged follow-up message in a channel
+    msg_id_val = getattr(message, "id", None)
+    if msg_id_val is not None:
+        claimed_followup = False
+
+        def _claim_followup_msg(c):
+            nonlocal claimed_followup
+            f_claims = c.get("_claimed_followup_msgs", {})
+            if not isinstance(f_claims, dict):
+                f_claims = {}
+            existing_claimer = f_claims.get(str(msg_id_val))
+            if existing_claimer is None or existing_claimer == my_bot_id:
+                f_claims[str(msg_id_val)] = my_bot_id
+                if len(f_claims) > 100:
+                    for old_k in list(f_claims.keys())[:-100]:
+                        f_claims.pop(old_k, None)
+                c["_claimed_followup_msgs"] = f_claims
+                claimed_followup = True
+            return c
+
+        update_json_file(shared_image_cache_file, {}, _claim_followup_msg)
+        if not claimed_followup:
+            return False, ""
 
     visual_note = f" (and {my_display_name}'s generated visual: {bot_visual_context[:90]})" if bot_visual_context else ""
     context_header = (
