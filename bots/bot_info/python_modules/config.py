@@ -1,7 +1,7 @@
 import re
 
 # ==============================================================================
-# PRE-COMPILED REGEXES & CONSTANTS
+# 1. URL, MEDIA HOST & OPENGRAPH EXTRACTION REGEXES
 # ==============================================================================
 YT_REGEX = re.compile(
     r'(https?://)?((?:www|m|music)\.)?'
@@ -14,6 +14,18 @@ GIPHY_REGEX = re.compile(r'giphy\.com/(?:gifs|stickers)/(?:[a-zA-Z0-9]+-)*([a-zA
 KLIPY_REGEX = re.compile(r'klipy\.com/gifs/([a-zA-Z0-9-]+)', re.IGNORECASE)
 DIRECT_GIF_URL_REGEX = re.compile(
     r'https?://\S+/([a-zA-Z0-9_\-]{3,})\.(?:gif|webp|mp4|webm)(?:\?\S*)?',
+    re.IGNORECASE
+)
+DIRECT_MEDIA_URL_REGEX = re.compile(
+    r'https?://\S+\.(?:png|jpg|jpeg|webp|gif|apng|mp4|mov|webm)(?:\?\S*)?',
+    re.IGNORECASE
+)
+KNOWN_MEDIA_HOST_REGEX = re.compile(
+    r'https?://(?:[\w\-]+\.)?(?:'
+    r'tenor\.com|giphy\.com|klipy\.com|imgur\.com|i\.imgur\.com|'
+    r'cdn\.discordapp\.com|media\.discordapp\.net|i\.redd\.it|v\.redd\.it|'
+    r'pbs\.twimg\.com|video\.twimg\.com|streamable\.com|catbox\.moe|files\.catbox\.moe'
+    r')/\S+',
     re.IGNORECASE
 )
 URL_REGEX = re.compile(r'https?://\S+')
@@ -37,7 +49,7 @@ OG_IMAGE_REGEX_2 = re.compile(
 )
 
 # ==============================================================================
-# CONTEXT, MEMORY & HEARSAY EXTRACTION
+# 2. MEMORY TAGS, HEARSAY FILTERING & IDF RETRIEVAL CONSTANTS
 # ==============================================================================
 LEARN_USER_EXTRACT_REGEX = re.compile(
     r'(?:!LEARN_USER|\[LEARN_USER)\s*[|:]\s*([^\|\n]+)\|\s*([^\]\n]+)\]?',
@@ -82,9 +94,35 @@ FACT_HEARSAY_PREFIX_REGEX = re.compile(
     r'(?:they|he|she|someone)\s+(?:said|told|claimed|thinks|thought))\b',
     re.IGNORECASE
 )
+FIRST_PERSON_SELF_REF_REGEX = re.compile(
+    r"\b(?:i|i'm|im|i've|ive|i'd|id|i'll|my|me|myself|mine)\b",
+    re.IGNORECASE
+)
+
+# Generic conversational words that must NOT single-handedly trigger long-term memory injection
+LOW_INFORMATION_RETRIEVAL_WORDS = frozenset({
+    "game", "games", "gaming", "play", "played", "playing", "player", "players",
+    "work", "works", "worked", "working", "make", "makes", "made", "making",
+    "take", "takes", "took", "taking", "give", "gives", "gave", "giving",
+    "look", "looks", "looked", "looking", "feel", "feels", "felt", "feeling",
+    "want", "wants", "wanted", "need", "needs", "needed", "use", "used", "using",
+    "year", "years", "month", "months", "week", "weeks", "world", "life", "live",
+    "lives", "lived", "living", "part", "parts", "side", "sides", "kind", "kinds",
+    "type", "types", "sort", "sorts", "real", "true", "hard", "easy", "high",
+    "long", "full", "open", "free", "next", "last", "same", "different", "other",
+    "others", "another", "important", "funny", "cool", "nice", "weird", "crazy",
+    "wild", "good", "great", "best", "better", "worse", "worst", "bad", "big",
+    "small", "old", "new", "young", "first", "second", "third", "place", "point",
+    "points", "case", "cases", "fact", "facts", "idea", "ideas", "question",
+    "questions", "answer", "answers", "number", "numbers", "group", "problem",
+    "problems", "hand", "hands", "head", "eyes", "face", "room", "home", "house",
+    "water", "food", "money", "power", "name", "names", "book", "books", "story",
+    "stories", "line", "lines", "word", "words", "friend", "friends", "guys",
+    "dude", "bruh", "chat", "post", "posts", "posted", "message", "messages"
+})
 
 # ==============================================================================
-# MEDIA EXTRACTION, CLEANSING & ANTI-REPETITION PATTERNS
+# 3. MEDIA EXTRACTION, CLEANSING & ANTI-REPETITION PATTERNS
 # ==============================================================================
 MEME_GEN_REGEX = re.compile(r'\[\s*MEME_GEN\s*:\s*(.*?)\s*\]', re.IGNORECASE | re.DOTALL)
 UNCLOSED_MEME_GEN_REGEX = re.compile(r'\[\s*MEME_GEN\s*:\s*([^\]]{10,})$', re.IGNORECASE | re.DOTALL)
@@ -111,6 +149,12 @@ REACT_NOTE_EXTRACT_REGEX = re.compile(
     re.IGNORECASE
 )
 
+# Detects when the LLM intentionally outputs a '[No response...]' stage note on an unprompted/side-comment turn
+INTENTIONAL_NO_RESPONSE_REGEX = re.compile(
+    r'(?:\[?\*?\[?no\s+response\b|\bchoosing\s+not\s+to\s+respond\b|\bsilent\s+turn\b|\bstays?\s+silent\b)',
+    re.IGNORECASE
+)
+
 # Strips any saved or echoed API/System error notices
 ERROR_REPLY_STRIP_REGEX = re.compile(
     r'\*\((?:API Error [^\)]+|System:[^\)]+|Brain empty[^\)]*|(?:Image|Meme|Voice) generation [^\)]+)\)\*',
@@ -124,10 +168,28 @@ ERROR_REPLY_CAPTURE_REGEX = re.compile(
 # Bracket emote conversion & Asterisk emote extraction (for anti-repetition tracking)
 BRACKET_EMOTE_REGEX = re.compile(r'\[([a-zA-Z][a-zA-Z0-9\s,\'\-\.~!]{1,45})\](?![\(\:])')
 BARE_FILLER_UTTERANCE_REGEX = re.compile(
-    r'^[\s\W]*(?:erm+|um+|uh+|hmm+|hm+|ah+|oh+|eh+|meh|huh|wat|wut|lol+|lmao+|lmfao+|rofl|k+|ok+|okay|bruh|bro|welp|oof|yikes|rip|ikr|idk|tbh|ngl|wow|whoa|woah)[\s\W]*$',
+    r'^[\s\W]*(?:'
+    r'erm+|um+|uh+|uh+[\s\-]+huh+|hmm+|hm+|ah+|oh+|eh+|meh|huh|wat|wut|'
+    r'lol+|lmao+|lmfao+|rofl|k+|ok+|okay|bruh|bro|welp|oof|yikes|rip|'
+    r'ikr|idk|tbh|ngl|wow|whoa|woah|well\s+anyways?|anyways?|whatever|sure|nice|cool|pretty\s+good'
+    r')[\s\W]*$',
     re.IGNORECASE
 )
 ASTERISK_EMOTE_EXTRACT_REGEX = re.compile(r'\*([a-zA-Z][^*\n]{2,55})\*')
+
+# Detects when a user explicitly asks bots to drop a repetitive topic or change the subject
+TOPIC_CHANGE_REQUEST_REGEX = re.compile(
+    r'(?:\b(?:talk|chat|speak|post|think)\s+about\s+something\s+(?:else|other\s+than|besides)\s*([^\?\.\!\n]*)'
+    r'|\b(?:stop|quit|enough|done)\s+(?:talking|posting|obsessing|joking|going\s+on)\s+about\s+([^\?\.\!\n]+)'
+    r'|\b(?:change\s+the\s+(?:subject|topic)|new\s+topic|move\s+on\s+from\s+([^\?\.\!\n]+))\b)',
+    re.IGNORECASE
+)
+
+# Matches literal placeholder strings that LLMs sometimes copy into [MEME_GEN: scene | TOP CAPTION | BOTTOM CAPTION]
+MEME_PLACEHOLDER_REGEX = re.compile(
+    r'^(?:short\s+)?(?:top|bottom)?\s*(?:text|caption|punchline|setup|line|header|footer|quote)?\s*[12]?\s*$',
+    re.IGNORECASE
+)
 
 # Explicit user media intent detection (handles natural phrasing & typos like "generate and image of")
 EXPLICIT_MEME_REQ_REGEX = re.compile(
@@ -152,10 +214,12 @@ USER_SUBJECT_EXTRACT_REGEX = re.compile(
 )
 BOT_IMAGE_PROMISE_REGEX = re.compile(
     r'\b(i\'ll generate|i generated|one rendering of|here\'s the (?:image|pic|picture|render|drawing|portrait|meme)|'
+    r'here\'s a (?:sky|picture|drawing|sketch|photo|portrait|scene|view)|'
+    r'coming right up|sketch it out|draw (?:it|that|one) for you|paint (?:it|that|one) for you|'
     r'loading screen i generated|pull it out of the aether|give you one that\'s technically accurate|'
     r'let\'s see what we\'re working with|behold[—\-\s]|points\s+at\s+|hologram\s+flickers\s+to\s+life|'
     r'look\s+at\s+this\s+|see\?\s+certified)\b'
-    r'|\*(?:raises\s+wand\s+dramatically|conjures\s+a\s+vision|snaps\s+a\s+photo|projects\s+a\s+hologram)\*',
+    r'|\*(?:raises\s+wand\s+dramatically|conjures\s+a\s+vision|snaps\s+a\s+photo|projects\s+a\s+hologram|sketches|draws)\*',
     re.IGNORECASE
 )
 EXPLICIT_VOICE_REQ_REGEX = re.compile(
@@ -174,25 +238,32 @@ TOPIC_INTEREST_CUES_REGEX = re.compile(
     re.IGNORECASE
 )
 
-# Stock/cliche meme punchlines that bots must not repeat across turns
-OVERUSED_MEME_CAPTIONS = {
+# Stock/cliche or placeholder meme punchlines that bots must NEVER render or repeat across turns
+OVERUSED_MEME_CAPTIONS = frozenset({
     "absolutely unacceptable",
     "bottom text",
     "top text",
+    "top caption",
+    "bottom caption",
+    "short top caption",
+    "short bottom punchline",
+    "bottom punchline",
+    "insert top text",
+    "insert bottom text",
     "when a peasant compares you to that pink catchphrase disaster",
     "when someone offers you a green apple after your daily limit"
-}
+})
 
 # Dynamic human-like spontaneity micro-impulses (injected lightly to keep bots organic, unpredictable & lifelike)
-SPONTANEOUS_MICRO_MOMENTS = [
+SPONTANEOUS_MICRO_MOMENTS = (
     "React like a real person hanging out in Discord: jump straight into your point or reaction without a formulaic opening.",
     "Notice a specific, quirky detail in what was just said or shown and riff on that exact detail instead of giving a generic summary.",
     "Keep your cadence punchy and spontaneous—skip repetitive physical stage directions and let your word choice carry your personality.",
     "If the moment calls for it, playfully challenge, tease, or ask a sharp follow-up question back to the speaker like a real friend/rival in chat.",
     "Vary your rhythm: you don't need a three-part monologue every turn; a sharp, natural 1-2 sentence remark or spontaneous visual observation feels much more alive.",
-    "Connect the current message to the ongoing vibe or a recent joke in the channel if it fits naturally, without forcing it.",
+    "If a joke or bit has already been done in the last 2 messages, pivot to a fresh angle or new observation instead of repeating the same gag.",
     "Express a genuine, in-the-moment mood shift (amused, skeptical, intrigued, unimpressed, or hyped) based on the exact topic being discussed."
-]
+)
 
 # Kaomoji/Emoticons to strip from TTS
 TTS_KAOMOJI_STRIP_REGEX = re.compile(
@@ -249,15 +320,16 @@ MIMO_AUDIO_TAG_MAP = {
     "mumbles": "softly",
 }
 
-STOPWORDS = {
+STOPWORDS = frozenset({
     "a", "an", "the", "of", "in", "on", "at", "to", "for", "with", "and", "or",
     "but", "is", "are", "was", "were", "be", "been", "being", "standing", "sitting",
     "holding", "looking", "wearing", "next", "beside", "front", "background", "style",
     "shot", "view", "close", "up", "glowing", "dark", "light", "lighting", "image",
     "photo", "generated", "showing", "attached", "media", "description", "when", "that",
     "this", "from", "into", "over", "under", "bot", "said", "told", "says", "think",
-    "thinks", "thought", "about", "what", "they", "them", "their", "have", "has", "had"
-}
+    "thinks", "thought", "about", "what", "they", "them", "their", "have", "has", "had",
+    "just", "like", "now", "still", "again", "more", "some", "into", "out", "really"
+})
 
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024  # 25 MB safety cap
 

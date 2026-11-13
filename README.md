@@ -7,33 +7,35 @@
 ![DeepInfra](https://img.shields.io/badge/DeepInfra-Multimodal_AI-000000?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
-A production-grade, distributed multi-agent Discord bot framework written in Python. Engineered to run multiple autonomous, distinct AI agents concurrently within the same Discord channels, this system features cross-process atomic state synchronization, a 3-tier memory verification pipeline, multimodal computer vision (including chronological 2x2 video/GIF keyframe storyboards with Laplacian sharpness scoring), subject-faithful image/meme synthesis, and director-mode neural Text-to-Speech (TTS). (This was made with the help of Gemini Pro/Argon)
+A production-grade, distributed multi-agent Discord bot framework written in Python. Engineered to run multiple autonomous, distinct AI agents concurrently within the same Discord channels, this system features cross-process atomic state synchronization with OS-level dead-PID lock recovery, an IDF-weighted 3-tier memory verification pipeline, multimodal computer vision (including motion-aware 2x2 video/GIF keyframe storyboards with Laplacian sharpness scoring), luminance-adaptive meme typography, and director-mode neural Text-to-Speech (TTS). (This was made with the help of Gemini Pro/Argon)
 
 ---
 
 ## Key Engineering Highlights
 
-* **Cross-Process Concurrency & Nanosecond State Synchronization (`core_system.py`):**
-  * Built an OS-agnostic, cross-process file-locking engine (`FileLock`) using atomic `O_CREAT | O_EXCL` lockfiles with automatic stale-lock eviction and atomic `.tmp` file replacement (`os.replace`).
-  * Enables multiple independent bot processes to read and mutate shared JSON state (`chat_memory.json`, `shared_image_cache.json`, `general_knowledge.json`) concurrently with zero race conditions or file corruption, backed by a thread-safe (`threading.RLock`) nanosecond timestamp and byte-size (`(st_mtime_ns, st_size)`) in-memory cache.
-  * Implements thread-local HTTP connection pooling (`threading.local` + `requests.Session` + `HTTPAdapter`) with warm keep-alive headers and automated socket pool resets across Cloudflare/gateway edge drops (`408`, `429`, `500`, `502`, `503`, `504`, `520`, `522`, `524`).
-* **Multi-Agent Discovery, Target Attribution & Spontaneous Agency (`bot_discovery.py`):**
-  * **Autonomous Service Discovery:** Active agents dynamically register their display names, IDs, and trigger keywords into a shared cross-process registry with automatic stale-agent pruning.
+* **Cross-Process Concurrency, Dead-PID Lock Recovery & Adaptive Circuit Breakers (`core_system.py`, `main_bot.py`):**
+  * **OS-Agnostic Atomic File Locking:** Built a cross-process synchronization engine (`FileLock`) using atomic `O_CREAT | O_EXCL` lockfiles, monotonic timeout tracking, and atomic `.tmp` file replacement (`os.replace`). Inspects lockfile `<pid>|<timestamp>` headers against the OS process table (`OpenProcess`/`GetExitCodeProcess` on Windows; `os.kill(pid, 0)` on POSIX) to evict locks held by terminated processes in `0ms`.
+  * **Zero-Copy Serialization & Nanosecond RAM Cache:** Enables independent bot processes to read and mutate shared JSON state (`chat_memory.json`, `shared_image_cache.json`, `general_knowledge.json`) concurrently without race conditions. Backed by a thread-safe (`threading.RLock`) `(st_mtime_ns, st_size)` cache that stores pre-serialized JSON payloads to eliminate redundant `copy.deepcopy` calls and skip no-op disk writes, paired with non-blocking `asyncio.to_thread` I/O wrappers.
+  * **Two-Phase Turn Coalescing & Bounded Waiter Queue:** Separates pre-snapshot message coalescing windows (`channel_in_coalesce_window`) from in-flight API generation locks (`channel_pending_waiters`) and watermark tracking (`max_hist_msg_id`), ensuring rapid multi-line user bursts coalesce into a single turn while mid-flight `@mentions` queue cleanly without dropping or double-posting.
+  * **Per-Model Adaptive Circuit Breaker & HTTP Pooling:** Maintains thread-local `requests.Session` connection pools (`HTTPAdapter`) with automated socket resets and truncated-JSON payload validation. Tracks consecutive gateway failures (`502`, `503`, `504`, `522`, `524`, timeouts) per `(endpoint, model)` pair to trip fast-fail cooldown windows that route directly to backup models without stalling the event loop.
+* **Multi-Agent Discovery, Target Attribution & Turn Coordination (`bot_discovery.py`):**
+  * **Low-I/O Service Discovery:** Active agents dynamically register their display names, aliases, and trigger keywords into a shared cross-process registry that throttles unchanged heartbeat writes to 30-minute intervals (eliminating 97% of idle disk I/O).
   * **Speaker-to-Target Disambiguation:** Resolves multi-agent conversation collisions by parsing sentence structure, prepositions, and Discord reply trees to annotate shared chat logs (`[User (speaking to Agent_A, NOT to Agent_B)]: ...`), preventing agents from hijacking commands or misattributing questions directed at other bots.
-  * **Visual-Aware 3-Stage Contextual Follow-Up Engine:** Combines deterministic addressing and AFK/stepping-away filters (Stage 1), sliding-window lexical and visual-prompt token overlap (Stage 2), and a zero-temperature 10-token LLM classifier (Stage 3) to maintain natural multi-turn conversations—even when users comment directly on background details inside an agent's generated image—without requiring repeated `@mentions`.
-  * **Dynamic Engagement & Dogpile Prevention:** Computes real-time conversational interest multipliers based on media uploads, open questions, and persona topic alignment, paired with an atomic cross-process cooldown lock (`_last_unprompted_chime`) so multiple agents never dogpile the same unprompted message.
-* **3-Tier Fact Extraction, Hearsay Verification & Loop Prevention (`memory_and_context.py`):**
-  * Separates long-term knowledge into three distinct tiers: **Per-User Dossiers** (`[LEARN_USER: user | fact]`), **Shared Universal Knowledge** (`[LEARN_GENERAL: fact]`), and **Server-Specific Lore** (`[LEARN: fact]`).
-  * **Two-Stage Hearsay & Ephemeral Action Guard:** Combines deterministic regex/token-overlap heuristics with an asynchronous LLM verification pass to block third-party reported speech (*"he said..."*, *"they told me..."*), sarcasm, and one-off chat commands from polluting user profiles, while automatically routing universal scientific or world trivia into shared general memory.
-  * **N-Gram & Stage-Direction Anti-Repetition Engine:** Dynamically analyzes each agent's recent turns using sliding 4-to-6-word n-gram frequency counters, opener tracking, and emote extraction (`text_and_parsers.py`) to actively prevent repetitive phrasing, cliché loops, and stage-direction overload.
-* **Multimodal Vision, Subject-Faithful Image/Meme Synthesis & Director-Mode TTS (`media_engine.py`, `ai_services.py`):**
-  * **2x2 Video, GIF & Sticker Storyboarding:** Uses OpenCV (`cv2`) and Pillow (`PIL`) to sample 4 chronological keyframes (`10%`, `36%`, `64%`, `90%`) from `.mp4`/`.webm` videos, animated GIFs/WebPs, Discord stickers, and OpenGraph embeds—scoring both contrast and Laplacian variance (`cv2.Laplacian`) to skip motion blur and black fade frames—and stamps sequence badges (`1`–`4`) onto a unified 2x2 storyboard grid.
-  * **Cross-Process Vision Deduplication:** Coordinates `PROCESSING|<timestamp>` locks in `shared_image_cache.json` so when multiple agents see the same uploaded media simultaneously, only one Vision API call is executed and shared across all processes.
-  * **Subject-Faithful Prompt Divergence & Auto-Fitting Meme Engine:** Enforces user-requested subject fidelity (`_extract_explicit_requested_subject`) while rewriting overlapping compositions (`ensure_unique_image_prompt`) and refreshing stale meme captions (`ensure_unique_meme_captions`). Renders classic Impact-style top/bottomcaptions via Pillow with dynamic font scaling, stroke outlines, and drop shadows.
-  * **Expressive Neural Voice Synthesis:** Parses structured Director Mode scripts (`Role`, `Scene`, `Guidance`) and inline vocal performance tags (`[sigh]`, `[chuckle]`, `[pauses for a moment]`) for `MiMo-V2.5-tts-voicedesign`.
+  * **4-Stage Contextual Follow-Up Engine:** Combines `O(1)` persistent tombstone and turn-cap checks (`max_followup_turns = 2` with active speaker tracking, Stage 0), deterministic addressing, AFK/stepping-away, dismissal closure, and third-person side-comment filters (Stage 1), stem-aware lexical/visual overlap and clarification fast-paths (Stage 2), and a zero-temperature 10-token LLM classifier (Stage 3) with atomic per-message claim locks (`_claimed_followup_msgs`).
+  * **Cross-Bot Floor Yielding & Dogpile Prevention:** Scales spontaneous engagement multipliers using media cues, open questions, and persona stem alignment while enforcing cross-bot active-exchange yielding (`is_other_bot_in_active_exchange`) and atomic channel-wide cooldown slots (`_last_unprompted_chime`) so unprompted agents never interrupt another bot's active 1-on-1 exchange.
+* **IDF-Weighted Memory Retrieval, Hearsay Verification & Loop Prevention (`memory_and_context.py`, `text_and_parsers.py`):**
+  * **3-Tier Knowledge Architecture & Superseding Consolidation:** Separates persistent memory into **Per-User Dossiers** (`[LEARN_USER: user | fact]`), **Shared Universal Knowledge** (`[LEARN_GENERAL: fact]`), and **Server-Specific Lore** (`[LEARN: fact]`). Automatically consolidates overlapping facts in-place (`consolidate_and_append_fact`) when more detailed information is learned, and self-heals memory files on startup by pruning ephemeral chat recaps.
+  * **IDF-Weighted Specificity Gate:** Scores stored memories against active conversation stems by weighting high-specificity domain and proper nouns (`2.5x`) against a 120+ word low-information conversational lexicon (`0.25x`), requiring a specificity threshold `>= 2.0` before injecting passive memories into the system prompt.
+  * **Zero-Latency First-Person Fast-Path & LLM Hearsay Verifier:** Validates unambiguous first-person self-disclosures in `0ms` with zero extra API calls while routing ambiguous or multi-user attributions through an asynchronous zero-temperature LLM verifier that blocks third-party reported speech (*"he said..."*, *"they told me..."*) and temporary chat actions.
+  * **Temporal Session Boundaries & Anti-Repetition Engine:** Tracks message creation timestamps to inject `[System Time Marker]` boundaries after `>= 45` minutes of silence, resets topic-fixation counters across sessions, forbids verbatim bio-quote parroting, strips novel-style outer dialogue quotes, and prunes excessive inline stage directions.
+* **Multimodal Vision, Luminance-Adaptive Meme Synthesis & Director-Mode TTS (`media_engine.py`, `ai_services.py`):**
+  * **Perceptual Motion-Aware 2x2 Video & GIF Storyboarding:** Uses OpenCV (`cv2`) and Pillow (`PIL`) under a bounded hardware semaphore (`threading.BoundedSemaphore(2)`) to sample 4 chronological keyframes (`10%`, `36%`, `64%`, `90%`) from videos, animated GIFs/WebPs, and Discord stickers—scoring contrast, Laplacian sharpness (`cv2.Laplacian`), and 16x16 grayscale frame-to-frame motion delta—and stamps sequence badges (`1`–`4`) onto a unified 2x2 storyboard grid.
+  * **Cross-Process Vision Deduplication & Zero-Cost Link Context:** Coordinates atomic `PROCESSING|<timestamp>|<bot_id>` locks in `shared_image_cache.json` and an in-memory SHA-256 digest cache (`_VISION_HASH_CACHE`) so uploaded media is analyzed by the 235B Vision model only once across all processes and reused by `auto_react` on the fast text model. Filters out generic webpage favicons (`is_visual_media_candidate`) while extracting `0ms` article titles and descriptions from embeds (`extract_webpage_embed_context`).
+  * **Subject-Faithful Prompt Grounding & Luminance-Adaptive Meme Engine:** Strips conversational filler from bot replies, enforces multi-line and history-aware user subject fidelity (`_extract_explicit_requested_subject`), rewrites overlapping visual compositions, and refreshes stale meme punchlines. Renders classic Impact-style captions via Pillow with automatic clause-pivot setup/punchline splitting, vertical center-subject safe zones (preserving the middle 52% of the canvas), and `ImageStat` background luminance sampling to boost stroke width and shadow alpha over bright regions.
+  * **Expressive Neural Voice Synthesis:** Rescues trailing media/memory tags from unclosed voice blocks, validates pronounceable dialogue, and parses Director Mode headers (`Role`, `Scene`, `Guidance`) and inline vocal performance tags (`[sigh]`, `[chuckle]`, `[pauses for a moment]`) for `MiMo-V2.5-tts-voicedesign`.
 * **Self-Healing Resilience & In-Character Glitch Awareness:**
-  * Automatic model fallback chains across primary and backup Vision (`Qwen3-VL-235B`, `Qwen2.5-VL-32B`, `Llama-3.2-90B-Vision`) and Text (`Qwen3-235B`, `Qwen3-30B`, `Llama-3.3-70B`) endpoints.
-  * Non-mutating retry context injection converts transient HTTP/network drops into structured `[System Glitch Context]` events, allowing agents to acknowledge lag spikes naturally while stripping raw error strings to prevent mimicry loops.
+  * Automatic model failover chains across primary and backup Vision (`Qwen3-VL-235B`, `Qwen2.5-VL-32B`, `Llama-3.2-90B-Vision`) and Text (`Qwen3-235B`, `Qwen3-30B`, `Llama-3.3-70B`) endpoints.
+  * Sanitizes upstream HTML/gateway error strings (`sanitize_api_error_text`) and converts transient API drops into structured `[System Glitch Context]` events, allowing agents to react to lag spikes in-character without echoing raw error strings.
 
 ---
 
@@ -61,16 +63,16 @@ A production-grade, distributed multi-agent Discord bot framework written in Pyt
 |                                                                                   |
 |  +-----------------------+  +-----------------------+  +-----------------------+  |
 |  |      main_bot.py      |  |   bot_discovery.py    |  | memory_and_context.py |  |
-|  | Event routing, admin  |  | Cross-bot registry,   |  | 3-tier memory router, |  |
-|  | suite, async locks,   |  | target disambiguation,|  | hearsay filter, n-gram|  |
-|  | & coalescing pipeline |  | & 3-stage follow-ups  |  | anti-loop & verifier  |  |
+|  | Two-phase turn locks, |  | Cross-bot registry,   |  | IDF specificity gate, |  |
+|  | atomic vision claims, |  | floor-yielding logic, |  | fact consolidation,   |  |
+|  | & coalescing pipeline |  | & 4-stage follow-ups  |  | & hearsay verifier    |  |
 |  +-----------------------+  +-----------------------+  +-----------------------+  |
 |                                                                                   |
 |  +-----------------------+  +-----------------------+  +-----------------------+  |
 |  |    ai_services.py     |  |    media_engine.py    |  |   core_system.py      |  |
-|  | Vision cache, emoji   |  | OpenCV Laplacian 2x2  |  | Cross-process atomic  |  |
-|  | reactor, FLUX subject |  | storyboards, Pillow   |  | FileLock, nanosecond  |  |
-|  | fidelity & MiMo TTS   |  | auto-fit meme engine  |  | RAM cache, HTTP pool  |  |
+|  | SHA-256 vision cache, |  | Motion/Laplacian 2x2  |  | Dead-PID FileLock,    |  |
+|  | subject-faithful FLUX,|  | storyboards & Pillow  |  | circuit breaker, RAM  |  |
+|  | emoji & MiMo TTS      |  | luminance meme engine |  | cache & HTTP pooling  |  |
 |  +-----------------------+  +-----------------------+  +-----------------------+  |
 +-----------------------------------------+-----------------------------------------+
                                           |
@@ -104,13 +106,13 @@ multi-agent-discord-framework/
 │       ├── short_term_memory/             # Shared channel history & vision cache JSONs
 │       └── python_modules/
 │           ├── main_bot.py                # Core Discord client lifecycle & turn orchestration
-│           ├── ai_services.py             # Vision, contextual emojis, image/meme & TTS engines
-│           ├── bot_discovery.py           # Multi-agent registry, target attribution & follow-ups
-│           ├── memory_and_context.py      # Hearsay verifier, n-gram anti-loop & history builder
-│           ├── media_engine.py            # OpenCV/PIL storyboards, meme overlay & Giphy/YT
-│           ├── text_and_parsers.py        # MiMo TTS tag sanitizer, emote pruner & text parser
-│           ├── core_system.py             # Thread-local HTTP pool & cross-process FileLock
-│           ├── config.py                  # Pre-compiled regexes & fallback model constants
+│           ├── ai_services.py             # Vision cache, contextual emojis, image/meme & TTS
+│           ├── bot_discovery.py           # Multi-agent registry, floor yielding & follow-ups
+│           ├── memory_and_context.py      # IDF retrieval, fact consolidation & hearsay filter
+│           ├── media_engine.py            # OpenCV/PIL storyboards, luminance memes & Giphy/YT
+│           ├── text_and_parsers.py        # MiMo TTS tag sanitizer, quote de-wrapper & parser
+│           ├── core_system.py             # Dead-PID FileLock, circuit breaker & HTTP pool
+│           ├── config.py                  # Pre-compiled regexes, IDF lexicons & fallbacks
 │           └── bot_editor.py              # Interactive CLI for editing agent constants & keywords
 ├── manage_bots.bat                        # Windows CLI Manager (PowerShell/WMI process control)
 ├── manage_bots.sh                         # POSIX/Linux/macOS CLI Manager (Bash process control)
@@ -178,11 +180,11 @@ From the CLI menu:
 | `@BotName admin temp <0.1-1.5>` | Adjusts the LLM creativity temperature for the current channel. |
 | `@BotName admin features <type> <on\|off>` | Toggles `vision`, `gifs`, `image` (images & memes), or `voice` per channel. |
 | `@BotName admin memory` | Displays a snapshot of learned Server Lore, Shared General Facts, and User Profiles. |
-| `@BotName admin learn <fact>` | Manually adds a server-specific lore entry. |
-| `@BotName admin learngeneral <fact>` | Manually adds a shared universal knowledge fact across all agents. |
-| `@BotName admin learnuser <user> \| <fact>` | Manually adds a fact to a specific user's dossier. |
+| `@BotName admin learn <fact>` | Manually adds or consolidates a server-specific lore entry. |
+| `@BotName admin learngeneral <fact>` | Manually adds or consolidates a shared universal knowledge fact across all agents. |
+| `@BotName admin learnuser <user> \| <fact>` | Manually adds or consolidates a fact in a specific user's dossier. |
 | `@BotName admin forget <keyword>` | Purges any server lore, general fact, or user dossier entry matching `<keyword>`. |
-| `@BotName !clearmemory` | Wipes short-term conversation history for the current channel. |
+| `@BotName !clearmemory` | Wipes short-term conversation history and recent generated media cache for the current channel. |
 
 ---
 

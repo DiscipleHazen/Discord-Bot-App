@@ -4,21 +4,23 @@ import discord
 
 from config import (
     ERROR_REPLY_STRIP_REGEX, IMAGE_DESC_STRIP_REGEX, IMAGE_DESC_EXTRACT_REGEX,
-    URL_REGEX, TOPIC_INTEREST_CUES_REGEX, STOPWORDS, BARE_FILLER_UTTERANCE_REGEX
+    URL_REGEX, TOPIC_INTEREST_CUES_REGEX, STOPWORDS, BARE_FILLER_UTTERANCE_REGEX,
+    TOPIC_CHANGE_REQUEST_REGEX, EXPLICIT_IMAGE_REQ_REGEX, EXPLICIT_MEME_REQ_REGEX,
+    EXPLICIT_VOICE_REQ_REGEX, EXPLICIT_GIF_REQ_REGEX
 )
 from core_system import load_json_file, update_json_file, post_with_backoff
 from memory_and_context import normalize_tokens
 
 # ==============================================================================
-# UNIVERSAL BOT DISCOVERY, SPONTANEITY & CONVERSATIONAL FOLLOW-UP ENGINE
+# PRE-COMPILED REGEXES & CONSTANTS FOR BOT DISCOVERY & FOLLOW-UP ROUTING
 # ==============================================================================
 
-NON_NAME_CONVERSATIONAL_STARTERS = {
+NON_NAME_CONVERSATIONAL_STARTERS = frozenset({
     "bro", "bruh", "dude", "man", "girl", "boy", "boys", "guys", "yall", "chat",
     "everyone", "everybody", "someone", "somebody", "anyone", "anybody", "nobody",
     "folks", "team", "gang", "homie", "bestie", "mate", "pal", "bud", "buddy",
     "there", "here", "the", "this", "that", "these", "those", "it", "its", "bot",
-    "what", "whats", "why", "how", "when", "where", "who", "which", "whose",
+    "bots", "what", "whats", "why", "how", "when", "where", "who", "which", "whose",
     "wait", "hold", "look", "see", "watch", "listen", "hear", "imagine", "think",
     "yeah", "yea", "yes", "yep", "yup", "nah", "nope", "no", "not", "never",
     "sure", "fine", "true", "real", "facts", "based", "valid", "fair", "right",
@@ -41,7 +43,9 @@ NON_NAME_CONVERSATIONAL_STARTERS = {
     "may", "shall", "need", "want", "love", "hate", "feel", "felt", "seem", "seems",
     "whatever", "whenever", "wherever", "whoever", "however", "meanwhile", "anyway",
     "anyways", "besides", "otherwise", "instead", "alright", "aight", "bet", "word"
-}
+})
+
+VERSION_SUFFIX_STRIP_REGEX = re.compile(r'\s+v?\d+(?:\.\d+)*$', re.IGNORECASE)
 
 STEPPING_AWAY_REGEX = re.compile(
     r'\b(?:brb|gtg|g2g|afk|going to bed|headed to bed|logging off|signing off|'
@@ -49,6 +53,122 @@ STEPPING_AWAY_REGEX = re.compile(
     r'gotta go|have to go|need to go|catch yall later|talk to you later|ttyl|goodnight|gn)\b',
     re.IGNORECASE
 )
+
+DISMISSAL_CLOSURE_REGEX = re.compile(
+    r'^[\s\W]*(?:uh+[\s\-]+huh+|well\s+anyways?|anyways?|whatever|never\s*mind|nvm|moving\s+on|'
+    r'fair\s+enough|makes\s+sense|gotcha|got\s+it|ah\s+ok(?:ay)?|oh\s+ok(?:ay)?|i\s+see|true\s+that|real|valid|facts|bet|word)[\s\W]*$',
+    re.IGNORECASE
+)
+
+DIRECT_SECOND_PERSON_FOLLOWUP_REGEX = re.compile(
+    r'\b(?:could\s+you|can\s+you|would\s+you|will\s+you|show\s+me|draw\s+me|make\s+me|'
+    r'tell\s+me|give\s+me|what\s+do\s+you|how\s+do\s+you|are\s+you|do\s+you|what\s+about\s+you|how\s+about\s+you)\b',
+    re.IGNORECASE
+)
+
+# Detects short clarification follow-ups ("what", "wdym", "what do you mean?") right after a bot speaks
+CLARIFICATION_FOLLOWUP_REGEX = re.compile(
+    r'^[\s\W]*(?:what\??|wdym\??|what\s+do\s+you\s+mean\??|huh\s*\?+|why\??|how\s+so\??|explain\??)[\s\W]*$',
+    re.IGNORECASE
+)
+
+# Detects third-person side-comments between humans talking *about* a bot (e.g. "she doesnt like u lol")
+THIRD_PERSON_SIDE_COMMENT_REGEX = re.compile(
+    r'\b(?:she|her|hers|he|him|his|that\s+bot|this\s+bot|the\s+bot|it)\s+'
+    r"(?:doesn'?t|dont|don'?t|didn'?t|didnt|won'?t|wont|can'?t|cant|isn'?t|isnt|ain'?t|"
+    r'hates|likes|loves|ignored|ignores|ghosted|left|forgot|broke|glitched)\b'
+    r'|\b(?:she|he)\s+(?:is|was)\s+(?:ignoring|ghosting|mad\s+at|talking\s+to)\s+(?:u|you|him|her|them)\b',
+    re.IGNORECASE
+)
+
+AT_MENTION_START_REGEX = re.compile(
+    r'^(?:hey\s+|hi\s+|hello\s+|yo\s+|ok\s+|okay\s+)?@([a-z0-9_\.\-]{2,})\b'
+)
+GREETING_NAME_START_REGEX = re.compile(
+    r'^(?:hey|hi|hello|yo|sup|ay|ayy)\s+([a-z0-9_]{3,})\b'
+)
+PREPOSITION_TARGET_END_REGEX = re.compile(r'\b(?:of|about|for|at|with|than)\s+@?$')
+
+CMD_VERBS_PATTERN = (
+    r'(?:please\s+)?(?:generate|draw|render|make|create|cook|drop|send|record|say|speak|'
+    r'give|show|paint|roast|meme|shitpost|tell|explain|rate|rank|what\s+do\s+you|how\s+do\s+you|are\s+you|do\s+you)'
+)
+
+
+def _strip_bot_version(name: str) -> str:
+    return VERSION_SUFFIX_STRIP_REGEX.sub('', name.strip()).strip()
+
+
+def _stem_word(w: str) -> str:
+    """Normalizes common plural/gerund suffixes so 'clouds' <-> 'cloud' and 'daydreamin' <-> 'daydreaming' match."""
+    if len(w) <= 3:
+        return w
+    if w.endswith("ies") and len(w) > 4:
+        return w[:-3] + "y"
+    if w.endswith("ing") and len(w) > 5:
+        return w[:-3]
+    if w.endswith("in") and len(w) > 5:
+        return w[:-2]
+    if w.endswith("es") and len(w) > 4 and w[-3] in "sxzho":
+        return w[:-2]
+    if w.endswith("s") and not w.endswith("ss"):
+        return w[:-1]
+    return w
+
+
+def _count_token_or_stem_overlap(tokens_a: set[str], tokens_b: set[str]) -> int:
+    """Counts shared tokens or shared 4+ char word stems between two token sets."""
+    if not tokens_a or not tokens_b:
+        return 0
+    exact = len(tokens_a & tokens_b)
+    if exact > 0:
+        return exact
+    stems_a = {_stem_word(t) for t in tokens_a if len(t) >= 4}
+    stems_b = {_stem_word(t) for t in tokens_b if len(t) >= 4}
+    return len(stems_a & stems_b)
+
+
+def _deactivate_followup_state(channel_followup_state: dict[int, dict], channel_id: int):
+    """
+    Marks a channel's follow-up state as inactive using a persistent tombstone dict
+    rather than popping the key, preventing closed follow-up windows from resurrecting
+    on subsequent messages.
+    """
+    existing = channel_followup_state.get(channel_id)
+    if isinstance(existing, dict):
+        existing["active"] = False
+    else:
+        channel_followup_state[channel_id] = {
+            "timestamp": 0.0,
+            "turns_used": 999,
+            "active": False,
+            "bot_msg_id": ""
+        }
+
+
+def is_other_bot_in_active_exchange(
+    chat_history_list: list[dict],
+    my_bot_id: int,
+    window_seconds: float = 28.0
+) -> bool:
+    """
+    Checks if a DIFFERENT bot spoke in the channel within the last `window_seconds`.
+    Used to suppress unprompted spontaneous chime-ins so bots don't barge in on top
+    of another bot's active conversation (like Malfoid interrupting uwu Bot at 3:54 PM).
+    """
+    if not chat_history_list:
+        return False
+    now_ts = time.time()
+    for m in reversed(chat_history_list[-6:]):
+        if not isinstance(m, dict) or m.get("role") == "system":
+            continue
+        if m.get("author_is_bot") and m.get("author_id") and m.get("author_id") != my_bot_id:
+            m_ts = m.get("timestamp")
+            if isinstance(m_ts, (int, float)) and (now_ts - float(m_ts)) <= window_seconds:
+                return True
+        if m.get("author_id") == my_bot_id:
+            return False
+    return False
 
 
 def build_universal_media_instructions(
@@ -67,8 +187,10 @@ def build_universal_media_instructions(
     rules = [
         "### HUMAN-LIKE SPONTANEITY, CONVERSATIONAL FLOW & AGENCY",
         "- **FEEL LIKE A REAL PERSON IN DISCORD**: You are an autonomous, living personality hanging out in the server—not a scripted command bot. Vary your rhythm naturally: sometimes drop a razor-sharp 1-sentence remark, a specific observation about a background detail, or a follow-up question; other times go into a fuller rant or story when the topic warrants it.",
+        "- **NATURAL DISCORD CHAT (NO NOVEL QUOTES OR BIO PARROTING)**: Write your spoken dialogue directly as normal chat text—NEVER wrap your sentences in quotation marks (`\"...\"`), and NEVER copy-paste sample quotes from your character bio!",
         "- **DROP FORMULAIC TEMPLATES**: Never start every message with the exact same `*emote* oh look... *emote* ... *emote*` three-part template. Use at most 1–2 physical `*emotes*` when they genuinely add comedy or attitude, or skip stage directions entirely and let your word choice carry your voice.",
-        "- **SPONTANEOUS AUTONOMY**: Choose on your own when a moment is funnier with pure text, when to sketch/snap a spontaneous `[IMAGE_GEN:]`, when to drop a captioned `[MEME_GEN:]` roast, or when to send a dramatic `[VOICE_MSG:]`.",
+        "- **READ THE ROOM & PIVOT CLEANLY**: When a joke has already been made or a user asks to change the subject, pivot 100% to a fresh topic immediately. Never apologize for a repetitive joke while repeating that exact same joke in the next breath!",
+        "- **SPONTANEOUS AUTONOMY (DON'T SPAM MEDIA EVERY TURN)**: Choose selectively when a moment is funnier with pure text, when to sketch/snap a spontaneous `[IMAGE_GEN:]`, when to drop a captioned `[MEME_GEN:]` roast, or when to send a dramatic `[VOICE_MSG:]`. If you just generated an image or meme on your previous turn, reply with pure text unless explicitly asked for another visual.",
         "",
         "### CRITICAL MEDIA & TAG RULES",
         "- **STRICT MUTUAL EXCLUSION (ONE VISUAL TAG MAX)**: Attach AT MOST ONE visual media tag per message. NEVER combine `[MEME_GEN: ...]`, `[IMAGE_GEN: ...]`, and `[GIF: ...]` in the same response.",
@@ -82,8 +204,8 @@ def build_universal_media_instructions(
             "- **Expressive Visuals — Balance Standard Images (`[IMAGE_GEN: ...]`) & Memes (`[MEME_GEN: ...]`)**:\n"
             "  1. **WHEN TO USE STANDARD `[IMAGE_GEN: detailed visual prompt]`**: Use `[IMAGE_GEN: ...]` (WITHOUT top/bottom text captions) when asked for an image/art/pic/photo, OR when spontaneously illustrating what your character is doing, looking at, holding, or reacting to in a scenic, artistic, or candid way.\n"
             "  2. **STRICT SUBJECT FIDELITY ON REQUESTS**: When a user asks you to generate an image of a specific person, character, food, object, or scenario (e.g., 'generate an image of X with Y'), your `[IMAGE_GEN: ...]` prompt MUST faithfully depict ALL of the user's requested subjects, characters, props, and actions! NEVER replace the user's requested subject or person with yourself or random wizards.\n"
-            "  3. **WHEN TO USE CAPTIONED MEMES `[MEME_GEN: visual scene | TOP TEXT | BOTTOM TEXT]`**: Use `[MEME_GEN: ...]` when a user asks for a meme, OR when delivering a punchy roast or relatable joke where top/bottom Impact text makes the punchline hit harder. Keep a natural mix between uncaptioned `[IMAGE_GEN:]`, captioned `[MEME_GEN:]`, and pure text replies—do NOT attach a meme to every single message!\n"
-            "  4. **100% FRESH MEME CAPTIONS & ANTI-CLONING**: NEVER reuse stock captions like `ABSOLUTELY UNACCEPTABLE` or repeat a caption from an earlier turn. Every `[MEME_GEN:]` must have brand-new TOP and BOTTOM captions written specifically for the current message's joke, and a fresh visual scene.\n"
+            "  3. **WHEN TO USE CAPTIONED MEMES `[MEME_GEN: visual scene | <witty setup line> | <witty punchline>]`**: Use `[MEME_GEN: ...]` when a user asks for a meme, OR occasionally when delivering a punchy roast or relatable joke where top/bottom Impact text makes the punchline hit harder. Keep a natural mix between uncaptioned `[IMAGE_GEN:]`, captioned `[MEME_GEN:]`, and pure text replies—do NOT attach a meme to every single message!\n"
+            "  4. **REAL CAPTIONS ONLY (NO PLACEHOLDERS OR CLICHÉS)**: Replace `<witty setup line>` and `<witty punchline>` with actual funny joke text! NEVER write literal placeholder labels like `TOP CAPTION`, `BOTTOM CAPTION`, `TOP TEXT`, or `ABSOLUTELY UNACCEPTABLE`, and never repeat a caption from an earlier turn.\n"
             f"  5. **HIGH-QUALITY VISUAL PROMPTS**: Write vivid, concrete visual descriptions (25–50 words) specifying subject, action, setting, camera angle, lighting, and art medium.{style_clause} Never ask the image model to render written sentences inside the artwork itself."
         )
     else:
@@ -134,28 +256,43 @@ def register_active_bot(
     keywords: list[str] | None
 ):
     clean_name = display_name.strip()
-    base_name = re.sub(r'\s+v?\d+(?:\.\d+)*$', '', clean_name, flags=re.IGNORECASE).strip()
+    base_name = _strip_bot_version(clean_name)
     aliases = {clean_name.lower(), base_name.lower()}
     for kw in (keywords or []):
         if kw and kw.strip():
-            aliases.add(kw.strip().lower())
-            aliases.add(f"{kw.strip().lower()} bot")
+            kw_low = kw.strip().lower()
+            aliases.add(kw_low)
+            aliases.add(f"{kw_low} bot")
 
     first_word = base_name.split()[0].lower() if base_name.split() else ""
     if len(first_word) >= 3 and first_word not in ("the", "bot", "discord"):
         aliases.add(first_word)
         aliases.add(f"{first_word} bot")
 
+    sorted_aliases = sorted(list(aliases))
+    norm_keywords = [k.lower() for k in (keywords or []) if k]
+    now_ts = time.time()
+
     def _mutate(cache_data):
         registry = cache_data.get("_active_bots", {})
         if not isinstance(registry, dict):
             registry = {}
+        existing = registry.get(str(bot_id))
+        if (
+            isinstance(existing, dict)
+            and existing.get("display_name") == clean_name
+            and existing.get("aliases") == sorted_aliases
+            and existing.get("keywords") == norm_keywords
+            and (now_ts - float(existing.get("last_seen", 0) or 0)) < 1800.0
+        ):
+            return cache_data
+
         registry[str(bot_id)] = {
             "bot_id": bot_id,
             "display_name": clean_name,
-            "aliases": sorted(list(aliases)),
-            "keywords": [k.lower() for k in (keywords or []) if k],
-            "last_seen": time.time()
+            "aliases": sorted_aliases,
+            "keywords": norm_keywords,
+            "last_seen": now_ts
         }
         cache_data["_active_bots"] = registry
         return cache_data
@@ -191,7 +328,7 @@ def get_other_active_bots(shared_image_cache_file: str, my_bot_id: int, guild_me
             if getattr(member, "bot", False) and member.id not in seen_ids:
                 seen_ids.add(member.id)
                 c_name = member.display_name.strip()
-                b_name = re.sub(r'\s+v?\d+(?:\.\d+)*$', '', c_name, flags=re.IGNORECASE).strip()
+                b_name = _strip_bot_version(c_name)
                 other_bots.append({
                     "bot_id": member.id,
                     "display_name": c_name,
@@ -200,6 +337,18 @@ def get_other_active_bots(shared_image_cache_file: str, my_bot_id: int, guild_me
                 })
 
     return other_bots
+
+
+def _build_my_terms_set(my_display_name: str, my_keywords: list[str] | None) -> set[str]:
+    clean_disp = my_display_name.strip().lower()
+    base_my_name = _strip_bot_version(clean_disp)
+    my_terms = {clean_disp, base_my_name}
+    for kw in (my_keywords or []):
+        if kw and kw.strip():
+            kw_low = kw.strip().lower()
+            my_terms.add(kw_low)
+            my_terms.add(f"{kw_low} bot")
+    return my_terms
 
 
 def is_command_directed_at_other_bot(
@@ -214,13 +363,7 @@ def is_command_directed_at_other_bot(
     if not clean_lower:
         return False
 
-    base_my_name = re.sub(r'\s+v?\d+(?:\.\d+)*$', '', my_display_name.strip(), flags=re.IGNORECASE).strip().lower()
-    my_terms = {my_display_name.strip().lower(), base_my_name}
-    for kw in (my_keywords or []):
-        if kw and kw.strip():
-            my_terms.add(kw.strip().lower())
-            my_terms.add(f"{kw.strip().lower()} bot")
-
+    my_terms = _build_my_terms_set(my_display_name, my_keywords)
     guild_members = getattr(message.guild, "members", None) if message.guild else None
     other_bots = get_other_active_bots(shared_image_cache_file, my_bot_id, guild_members)
 
@@ -236,7 +379,7 @@ def is_command_directed_at_other_bot(
     for mentioned_user in getattr(message, "mentions", []):
         if getattr(mentioned_user, "bot", False) and mentioned_user.id != my_bot_id:
             m_name = mentioned_user.display_name.strip().lower()
-            m_base = re.sub(r'\s+v?\d+(?:\.\d+)*$', '', m_name, flags=re.IGNORECASE).strip()
+            m_base = _strip_bot_version(m_name)
             other_bot_terms.add(m_name)
             if m_base:
                 other_bot_terms.add(m_base)
@@ -255,14 +398,10 @@ def is_command_directed_at_other_bot(
             return True
 
     # 3. Check if another bot is immediately followed by a command verb or question
-    cmd_verbs = (
-        r'(?:please\s+)?(?:generate|draw|render|make|create|cook|drop|send|record|say|speak|'
-        r'give|show|paint|roast|meme|shitpost|tell|explain|rate|rank|what\s+do\s+you|how\s+do\s+you|are\s+you|do\s+you)'
-    )
     for other_alias in sorted(other_bot_terms, key=len, reverse=True):
-        if other_alias and re.search(rf'\b{re.escape(other_alias)}[,:\s]+{cmd_verbs}\b', clean_lower):
+        if other_alias and re.search(rf'\b{re.escape(other_alias)}[,:\s]+{CMD_VERBS_PATTERN}\b', clean_lower):
             if not any(
-                my_t and re.search(rf'\b{re.escape(my_t)}[,:\s]+{cmd_verbs}\b', clean_lower)
+                my_t and re.search(rf'\b{re.escape(my_t)}[,:\s]+{CMD_VERBS_PATTERN}\b', clean_lower)
                 for my_t in my_terms
             ):
                 return True
@@ -304,13 +443,7 @@ def mentions_other_active_bot(
     if not clean_lower:
         return False
 
-    base_my_name = re.sub(r'\s+v?\d+(?:\.\d+)*$', '', my_display_name.strip(), flags=re.IGNORECASE).strip().lower()
-    my_terms = {my_display_name.strip().lower(), base_my_name}
-    for kw in (my_keywords or []):
-        if kw and kw.strip():
-            my_terms.add(kw.strip().lower())
-            my_terms.add(f"{kw.strip().lower()} bot")
-
+    my_terms = _build_my_terms_set(my_display_name, my_keywords)
     if any(my_t and re.search(rf'\b{re.escape(my_t)}\b', clean_lower) for my_t in my_terms):
         return False
 
@@ -348,14 +481,14 @@ def is_addressing_other_person(
     other_norm = {n.strip().lower() for n in (known_other_names or set()) if n and len(n.strip()) >= 2} - my_norm
 
     # Case A: Explicit @mention at the start of the message
-    at_match = re.match(r'^(?:hey\s+|hi\s+|hello\s+|yo\s+|ok\s+|okay\s+)?@([a-z0-9_\.\-]{2,})\b', clean)
+    at_match = AT_MENTION_START_REGEX.match(clean)
     if at_match:
         target = at_match.group(1).lower()
         if target not in my_norm and target not in NON_NAME_CONVERSATIONAL_STARTERS:
             return True
 
     # Case B: Explicit greeting word ('hey', 'hi', 'hello', 'yo', 'sup') + name
-    greet_match = re.match(r'^(?:hey|hi|hello|yo|sup|ay|ayy)\s+([a-z0-9_]{3,})\b', clean)
+    greet_match = GREETING_NAME_START_REGEX.match(clean)
     if greet_match:
         target = greet_match.group(1).lower()
         if target not in my_norm and target not in NON_NAME_CONVERSATIONAL_STARTERS:
@@ -386,9 +519,10 @@ async def check_followup_relevance_via_api(
     prompt = (
         f"Bot '{bot_name}' just posted in Discord: \"{bot_recent_text}\"\n"
         f"A user then wrote: \"{user_text}\"\n\n"
-        f"Is the user's message replying to '{bot_name}', continuing the banter with '{bot_name}', "
-        f"or commenting on a detail inside the image/meme '{bot_name}' just posted?\n"
-        "(Answer NO if the user is clearly talking to a different human or announcing they are leaving/AFK.)\n"
+        f"Is the user's message directly continuing the conversation with '{bot_name}', "
+        f"answering '{bot_name}'s question, or asking '{bot_name}' to do/draw/explain something?\n"
+        "(Answer NO only if the user is changing the subject away from the bot, giving a brief closing dismissal like 'uh huh / well anyways / fair enough', "
+        "talking to another person, or announcing they are leaving/AFK.)\n"
         "Reply with exactly one word: YES or NO."
     )
     payload = {
@@ -431,11 +565,17 @@ async def resolve_contextual_followup(
     """
     Detects when a human sends a natural conversational follow-up within a recent message
     window after this bot spoke (or comments on the visual details of an image/meme
-    this bot just generated), using Stage 1 (addressing & AFK filter), Stage 2 (window &
-    visual/text token overlap), and Stage 3 (lightweight API relevance check).
+    this bot just generated), using Stage 0 (tombstone & turn-cap check), Stage 1
+    (addressing, third-person side-comment, dismissal & AFK filter), Stage 2
+    (window, clarification query & stem-aware token/question overlap), and Stage 3
+    (lightweight API relevance check).
     """
-    if message.author.bot:
+    if max_followup_turns <= 0 or message.author.bot:
         return False, ""
+
+    # Use a 2-turn follow-up cap (upgrading legacy 1 -> 2) so users can naturally exchange
+    # 2 follow-ups (e.g. 'how are you?' -> 'good, could you draw me the clouds?') without bot spam!
+    effective_max_turns = 2 if max_followup_turns == 1 else max_followup_turns
 
     if message.reference and message.reference.message_id:
         return False, ""
@@ -444,12 +584,17 @@ async def resolve_contextual_followup(
     state = channel_followup_state.get(channel_id)
     now = time.time()
 
-    base_my_name = re.sub(r'\s+v?\d+(?:\.\d+)*$', '', my_display_name.strip(), flags=re.IGNORECASE).strip().lower()
-    my_terms = {my_display_name.strip().lower(), base_my_name}
-    for kw in (my_keywords or []):
-        if kw and kw.strip():
-            my_terms.add(kw.strip().lower())
-            my_terms.add(f"{kw.strip().lower()} bot")
+    # Stage 0: Fast O(1) tombstone, timeout, and turn-cap check BEFORE any regexes or disk reads
+    if state is not None:
+        if (
+            not state.get("active", True)
+            or (now - state.get("timestamp", 0)) > followup_timeout
+            or state.get("turns_used", 0) >= effective_max_turns
+        ):
+            _deactivate_followup_state(channel_followup_state, channel_id)
+            return False, ""
+
+    my_terms = _build_my_terms_set(my_display_name, my_keywords)
 
     known_other_names = set()
     for m in (chat_history_list or [])[-15:]:
@@ -460,21 +605,26 @@ async def resolve_contextual_followup(
             if first_part:
                 known_other_names.add(first_part)
 
-    # Stage 1: Abort if user mentions another bot, greets another person by name, or says BRB/AFK
+    # Stage 1: Abort and deactivate follow-up window if user mentions another bot, greets another person,
+    # announces they are stepping away (AFK/BRB), or dismisses/closes the topic ("uh huh...", "well anyways", "fair enough")
     if (
         mentions_other_active_bot(clean_content, message, my_bot_id, my_display_name, my_keywords, shared_image_cache_file)
         or is_addressing_other_person(clean_content, my_terms, known_other_names)
+        or STEPPING_AWAY_REGEX.search(clean_content or "")
+        or DISMISSAL_CLOSURE_REGEX.match(clean_content or "")
     ):
-        channel_followup_state.pop(channel_id, None)
+        _deactivate_followup_state(channel_followup_state, channel_id)
         return False, ""
 
-    if STEPPING_AWAY_REGEX.search(clean_content):
-        channel_followup_state.pop(channel_id, None)
-        return False, ""
+    is_clarification_query = bool(CLARIFICATION_FOLLOWUP_REGEX.match(clean_content or ""))
 
-    # Ignore bare 1-word filler utterances ('erm', 'um', 'uh', 'lol', 'ok', 'bruh')
-    # so bots don't pounce on non-sequitur filler sounds without an explicit mention/reply
-    if BARE_FILLER_UTTERANCE_REGEX.match(clean_content or ""):
+    # Ignore bare 1-word filler utterances ('erm', 'um', 'uh', 'lol', 'ok', 'bruh', 'pretty good')
+    # or third-person side-comments between humans talking *about* the bot ('she doesnt like u lol'),
+    # while allowing direct confusion/clarification follow-ups ('what', 'wdym') right after a bot speaks!
+    if (
+        (BARE_FILLER_UTTERANCE_REGEX.match(clean_content or "") and not is_clarification_query)
+        or THIRD_PERSON_SIDE_COMMENT_REGEX.search(clean_content or "")
+    ):
         return False, ""
 
     # Check if another bot was explicitly addressed more recently in this channel
@@ -483,12 +633,7 @@ async def resolve_contextual_followup(
     if isinstance(active_f_map, dict):
         active_owner_id = active_f_map.get(channel_id, active_f_map.get(str(channel_id)))
         if active_owner_id and active_owner_id != my_bot_id:
-            channel_followup_state.pop(channel_id, None)
-            return False, ""
-
-    if state:
-        if not state.get("active", True) or (now - state.get("timestamp", 0)) > followup_timeout or state.get("turns_used", 0) >= max_followup_turns:
-            channel_followup_state.pop(channel_id, None)
+            _deactivate_followup_state(channel_followup_state, channel_id)
             return False, ""
 
     non_system_msgs = [
@@ -498,7 +643,6 @@ async def resolve_contextual_followup(
     if not non_system_msgs:
         return False, ""
 
-    # Allow a slightly wider lookback (up to 3 messages) if the bot's recent turn included generated media
     effective_window = max(followup_window_messages, 3)
     recent_window = non_system_msgs[-effective_window:]
     bot_msg_entry = None
@@ -510,6 +654,9 @@ async def resolve_contextual_followup(
             or (m.get("role") == "assistant" and m.get("author_name") == my_display_name)
         )
         if is_self:
+            msg_ts = m.get("timestamp")
+            if isinstance(msg_ts, (int, float)) and (now - msg_ts) > followup_timeout:
+                break
             bot_had_media = bool(m.get("img_prompt") or m.get("meme_spec") or "[Attached Media Description:" in m.get("content", ""))
             if idx <= followup_window_messages or bot_had_media:
                 bot_msg_entry = m
@@ -517,9 +664,6 @@ async def resolve_contextual_followup(
             break
 
     if not bot_msg_entry:
-        return False, ""
-
-    if state and state.get("turns_used", 0) >= max_followup_turns:
         return False, ""
 
     raw_bot_text = bot_msg_entry.get("content", "")
@@ -537,6 +681,26 @@ async def resolve_contextual_followup(
         clean_bot_text = clean_bot_text[:157] + "..."
 
     combined_bot_context = f"{clean_bot_text} [Visual shown: {bot_visual_context[:140]}]" if bot_visual_context else clean_bot_text
+    user_tokens = normalize_tokens(clean_content)
+    bot_tokens = normalize_tokens(combined_bot_context)
+    stem_overlap_count = _count_token_or_stem_overlap(user_tokens, bot_tokens)
+
+    is_topic_change_req = bool(TOPIC_CHANGE_REQUEST_REGEX.search(clean_content or ""))
+    is_direct_media_or_second_person = bool(
+        DIRECT_SECOND_PERSON_FOLLOWUP_REGEX.search(clean_content or "")
+        or EXPLICIT_IMAGE_REQ_REGEX.search(clean_content or "")
+        or EXPLICIT_MEME_REQ_REGEX.search(clean_content or "")
+        or EXPLICIT_VOICE_REQ_REGEX.search(clean_content or "")
+        or EXPLICIT_GIF_REQ_REGEX.search(clean_content or "")
+    )
+    bot_asked_question = ("?" in clean_bot_text)
+
+    # If we looked beyond `followup_window_messages` solely because `bot_had_media`,
+    # require either stem overlap with the visual context or an explicit question/topic-change
+    if distance_from_end > followup_window_messages:
+        visual_tokens = normalize_tokens(bot_visual_context)
+        if _count_token_or_stem_overlap(user_tokens, visual_tokens) == 0 and "?" not in clean_content and not is_topic_change_req:
+            return False, ""
 
     if distance_from_end >= 2 and len(recent_window) >= 2:
         intervening_msgs = recent_window[-(distance_from_end - 1):]
@@ -545,22 +709,50 @@ async def resolve_contextual_followup(
             if im.get("author_is_bot") and im.get("author_id") != my_bot_id
         ]
         if other_bot_intervened:
-            user_tokens = normalize_tokens(clean_content)
-            my_bot_tokens = normalize_tokens(combined_bot_context)
             other_bot_tokens = normalize_tokens(" ".join(im.get("content", "") for im in other_bot_intervened))
-            overlap_me = len(user_tokens & my_bot_tokens)
-            overlap_other = len(user_tokens & other_bot_tokens)
+            overlap_me = stem_overlap_count
+            overlap_other = _count_token_or_stem_overlap(user_tokens, other_bot_tokens)
             if overlap_me == 0 or overlap_me <= overlap_other:
+                _deactivate_followup_state(channel_followup_state, channel_id)
                 return False, ""
+
+    active_conv_user_id = state.get("user_id") if isinstance(state, dict) else None
+    is_same_human_speaker = (active_conv_user_id is None or active_conv_user_id == getattr(message.author, "id", None))
+
+    # If a different human jumps in without mentioning the bot, require stem overlap with what the bot
+    # said/showed or a direct media/topic-change/clarification request so bystanders' side comments aren't hijacked
+    if (
+        not is_same_human_speaker
+        and stem_overlap_count == 0
+        and not is_direct_media_or_second_person
+        and not is_topic_change_req
+        and not (distance_from_end == 1 and is_clarification_query)
+    ):
+        return False, ""
+
+    # Stage 2 Fast-Path: If this bot was literally the very last speaker in the channel (distance_from_end == 1)
+    # and the user is asking for clarification ('what', 'wdym') or the same speaker is answering the bot's question,
+    # asking a direct second-person/media request, or sharing word stems ('cloud' <-> 'clouds'), approve in 0ms!
+    direct_immediate_continuation = (
+        distance_from_end == 1
+        and (
+            is_clarification_query
+            or (
+                is_same_human_speaker
+                and (stem_overlap_count > 0 or is_direct_media_or_second_person or bot_asked_question or is_topic_change_req)
+            )
+        )
+    )
 
     # Stage 3: Verify ambiguous follow-ups via fast API check if credentials are provided
     api_key = kwargs.get("api_key")
     api_url = kwargs.get("api_url")
     text_model = kwargs.get("text_model")
-    if api_key and api_url and text_model and combined_bot_context and clean_content:
-        user_tokens = normalize_tokens(clean_content)
-        bot_tokens = normalize_tokens(combined_bot_context)
-        if len(user_tokens & bot_tokens) == 0:
+    if not direct_immediate_continuation and api_key and api_url and text_model and combined_bot_context and clean_content:
+        if stem_overlap_count == 0 and not is_topic_change_req:
+            # Skip Stage-3 API call on ultra-short 1-2 word non-questions with zero token overlap
+            if len(clean_content.split()) <= 2 and "?" not in clean_content:
+                return False, ""
             is_rel = await check_followup_relevance_via_api(
                 api_url=api_url,
                 api_key=api_key,
@@ -615,17 +807,27 @@ def compute_spontaneous_interest_multiplier(
     my_bot_id: int
 ) -> float:
     """
-    Calculates a natural, human-like interest multiplier (0.25x to 2.35x) to scale
+    Calculates a natural, human-like interest multiplier (0.0x to 2.35x) to scale
     a bot's spontaneous chime-in and emoji reaction chances based on conversational cues:
     - Boosts interest when a user shares media/art, asks an open question to the channel,
       or mentions topics aligned with the bot's persona.
-    - Dampens interest when a user is stepping away (AFK/BRB) or when the bot just spoke.
+    - Yields the floor (0.18x) when ANOTHER bot is actively engaged in a live exchange
+      in the channel within the last 28 seconds so bots don't barge in on each other.
+    - Dampens interest when a user is stepping away (AFK/BRB), dismissing a topic,
+      making a third-person side-comment, sending 1-word filler, or when this bot just spoke.
     """
     if is_author_bot:
         return 0.65
 
-    if STEPPING_AWAY_REGEX.search(clean_content or ""):
-        return 0.15
+    if (
+        STEPPING_AWAY_REGEX.search(clean_content or "")
+        or DISMISSAL_CLOSURE_REGEX.match(clean_content or "")
+        or THIRD_PERSON_SIDE_COMMENT_REGEX.search(clean_content or "")
+    ):
+        return 0.05
+
+    if not has_media and BARE_FILLER_UTTERANCE_REGEX.match(clean_content or ""):
+        return 0.12
 
     mult = 1.0
     if has_media:
@@ -637,16 +839,19 @@ def compute_spontaneous_interest_multiplier(
     if clean_content and persona_prompt:
         msg_tokens = normalize_tokens(clean_content)
         persona_tokens = normalize_tokens(persona_prompt[:900])
-        if len(msg_tokens & persona_tokens) >= 2:
+        if _count_token_or_stem_overlap(msg_tokens, persona_tokens) >= 2:
             mult += 0.40
 
-    # Check how recently this bot already spoke so it doesn't monopolize unprompted chat
+    # Check how recently this bot or ANOTHER bot spoke so bots don't monopolize chat
+    # or barge unprompted into another bot's active 1-on-1 conversation
     if chat_history_list:
         recent_non_sys = [m for m in chat_history_list[-6:] if m.get("role") != "system"]
         if recent_non_sys and recent_non_sys[-1].get("author_id") == my_bot_id:
-            mult *= 0.45
+            mult *= 0.40
+        elif is_other_bot_in_active_exchange(chat_history_list, my_bot_id, window_seconds=28.0):
+            mult *= 0.18
 
-    return max(0.15, min(2.35, mult))
+    return max(0.05, min(2.35, mult))
 
 
 def detect_addressed_bot_name(
@@ -659,7 +864,7 @@ def detect_addressed_bot_name(
 ) -> str | None:
     """
     Determines which specific bot (by display_name) a user's message is directly
-    addressing so shared chat history can explicitly tag `[Carzen (speaking to Chud Bot 2.8, NOT to Guild Assistant)]: ...`
+    addressing so shared chat history can explicitly tag `[Carzen (speaking to BotA, NOT to BotB)]: ...`
     even when multiple bots are mentioned in the same sentence.
     """
     clean_lower = text.strip().lower()
@@ -673,15 +878,16 @@ def detect_addressed_bot_name(
             return ref_author.display_name.strip()
 
     # Build a unified map of {term: canonical_bot_display_name} for THIS bot and all OTHER bots
-    base_my_name = re.sub(r'\s+v?\d+(?:\.\d+)*$', '', my_display_name.strip(), flags=re.IGNORECASE).strip().lower()
+    base_my_name = _strip_bot_version(my_display_name).lower()
     term_to_bot: dict[str, str] = {
         my_display_name.strip().lower(): my_display_name.strip(),
         base_my_name: my_display_name.strip()
     }
     for kw in (my_keywords or []):
         if kw and len(kw.strip()) >= 3:
-            term_to_bot[kw.strip().lower()] = my_display_name.strip()
-            term_to_bot[f"{kw.strip().lower()} bot"] = my_display_name.strip()
+            kw_low = kw.strip().lower()
+            term_to_bot[kw_low] = my_display_name.strip()
+            term_to_bot[f"{kw_low} bot"] = my_display_name.strip()
 
     guild_members = getattr(message.guild, "members", None) if message.guild else None
     other_bots = get_other_active_bots(shared_image_cache_file, my_bot_id, guild_members)
@@ -694,12 +900,12 @@ def detect_addressed_bot_name(
             if len(t_clean) >= 3 and t_clean not in ("bot", "the", "app") and t_clean not in term_to_bot:
                 term_to_bot[t_clean] = ob_name
 
-    # 2. Check if the message starts by addressing any bot ("hey chud...", "@uwu Bot 2.8...")
+    # 2. Check if the message starts by addressing any bot
     for term in sorted(term_to_bot.keys(), key=len, reverse=True):
         if term and re.match(rf'^(?:hey\s+|hi\s+|ok\s+|yo\s+|please\s+)?@?{re.escape(term)}\b', clean_lower):
             return term_to_bot[term]
 
-    # 3. Check if a bot is mentioned and is NOT just the object of a preposition ("of @Chud Bot")
+    # 3. Check if a bot is mentioned and is NOT just the object of a preposition ("of @BotName")
     for mentioned_user in getattr(message, "mentions", []):
         if getattr(mentioned_user, "bot", False):
             m_name = mentioned_user.display_name.strip()
@@ -715,7 +921,7 @@ def detect_addressed_bot_name(
         for m in re.finditer(rf'\b{re.escape(term)}\b', clean_lower):
             start_pos = m.start()
             prefix_slice = clean_lower[max(0, start_pos - 12):start_pos]
-            if re.search(r'\b(?:of|about|for|at|with|than)\s+@?$', prefix_slice):
+            if PREPOSITION_TARGET_END_REGEX.search(prefix_slice):
                 continue
             if start_pos < best_pos:
                 best_pos = start_pos
