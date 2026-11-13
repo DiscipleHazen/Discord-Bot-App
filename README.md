@@ -90,7 +90,7 @@ A production-grade, distributed multi-agent Discord bot framework written in Pyt
 ## Repository Structure
 
 ```text
-discord-bot-app/
+multi-agent-discord-framework/
 ├── bots/
 │   ├── guild_assistant.py                 # Reference steward & quartermaster AI agent
 │   ├── custom_agent_alpha.py              # Additional autonomous persona script #1
@@ -133,8 +133,8 @@ discord-bot-app/
 Clone the repository and install the required Python dependencies:
 
 ```bash
-git clone https://github.com/disciplehazen/discord-bot-app.git
-cd discord-bot-app
+git clone https://github.com/disciplehazen/multi-agent-discord-framework.git
+cd multi-agent-discord-framework
 pip install discord.py requests python-dotenv Pillow opencv-python
 ```
 
