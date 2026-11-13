@@ -3,11 +3,19 @@ import re
 # ==============================================================================
 # PRE-COMPILED REGEXES & CONSTANTS
 # ==============================================================================
-YT_REGEX = re.compile(r'(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)([\w-]+)')
-TENOR_REGEX = re.compile(r'tenor\.com/view/([a-zA-Z0-9-]+)-gif', re.IGNORECASE)
-GIPHY_REGEX = re.compile(r'giphy\.com/gifs/(?:[a-zA-Z0-9]+-)*([a-zA-Z0-9-]+)', re.IGNORECASE)
+YT_REGEX = re.compile(
+    r'(https?://)?((?:www|m|music)\.)?'
+    r'(youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/|youtube\.com/live/|youtube\.com/embed/)'
+    r'([\w-]+)',
+    re.IGNORECASE
+)
+TENOR_REGEX = re.compile(r'tenor\.com/(?:view|[a-z]{2}/view)/([a-zA-Z0-9-]+)-gif', re.IGNORECASE)
+GIPHY_REGEX = re.compile(r'giphy\.com/(?:gifs|stickers)/(?:[a-zA-Z0-9]+-)*([a-zA-Z0-9-]+)', re.IGNORECASE)
 KLIPY_REGEX = re.compile(r'klipy\.com/gifs/([a-zA-Z0-9-]+)', re.IGNORECASE)
-DIRECT_GIF_URL_REGEX = re.compile(r'https?://\S+/([a-zA-Z0-9_\-]{3,})\.(?:gif|webp)(?:\?\S*)?', re.IGNORECASE)
+DIRECT_GIF_URL_REGEX = re.compile(
+    r'https?://\S+/([a-zA-Z0-9_\-]{3,})\.(?:gif|webp|mp4|webm)(?:\?\S*)?',
+    re.IGNORECASE
+)
 URL_REGEX = re.compile(r'https?://\S+')
 MARKDOWN_URL_WRAP_REGEX = re.compile(r'\[([^\]]+)\]\((https?://[^\s\)]+)\)')
 
@@ -20,21 +28,23 @@ OG_VIDEO_REGEX_2 = re.compile(
     re.IGNORECASE
 )
 OG_IMAGE_REGEX_1 = re.compile(
-    r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image|og:image:url)["\'][^>]+content=["\']([^"\']+)["\']',
+    r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image|og:image:url|og:image:secure_url)["\'][^>]+content=["\']([^"\']+)["\']',
     re.IGNORECASE
 )
 OG_IMAGE_REGEX_2 = re.compile(
-    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\'](?:og:image|twitter:image|og:image:url)["\']',
+    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\'](?:og:image|twitter:image|og:image:url|og:image:secure_url)["\']',
     re.IGNORECASE
 )
 
-# Context & Memory Extraction
+# ==============================================================================
+# CONTEXT, MEMORY & HEARSAY EXTRACTION
+# ==============================================================================
 LEARN_USER_EXTRACT_REGEX = re.compile(
-    r'(?:!LEARN_USER|\[LEARN_USER)\s*[|:]\s*([^\|]+)\|\s*([^\]\n]+)\]?',
+    r'(?:!LEARN_USER|\[LEARN_USER)\s*[|:]\s*([^\|\n]+)\|\s*([^\]\n]+)\]?',
     re.IGNORECASE
 )
 LEARN_USER_STRIP_REGEX = re.compile(
-    r'(?:!LEARN_USER|\[LEARN_USER)\s*[|:]\s*[^\|]+\|\s*[^\]\n]*\]?',
+    r'(?:!LEARN_USER|\[LEARN_USER)\s*[|:]\s*[^\|\n]+\|\s*[^\]\n]*\]?',
     re.IGNORECASE
 )
 LEARN_GENERAL_EXTRACT_REGEX = re.compile(
@@ -59,7 +69,7 @@ THIRD_PARTY_REPORT_REGEX = re.compile(
     r'\b(?:'
     r'(?:i\s+(?:said|told\s+\w+|mentioned|heard|read|saw)\s+(?:that\s+)?)?'
     r'(?:they|them|he|him|she|her|someone|somebody|people|everyone|bro|dude|guy|girl|chat|'
-    r'my\s+(?:friend|friends|coworker|boss|brother|sister|mom|dad|ex|roommate|partner|wife|husband|bf|gf)|'
+    r'my\s+(?:friend|friends|coworker|boss|brother|sister|mom|dad|ex|roommate|partner|wife|husband|bf|gf|cousin|uncle|aunt)|'
     r'a\s+(?:friend|guy|girl|person|user)|@[a-zA-Z0-9_\-\.]+)\s+'
     r'(?:said|says|say|told\s+(?:me|us|him|her|them)|claimed|claims|mentioned|thinks|thought|asked|wrote|posted|kept\s+saying|was\s+saying|were\s+saying)'
     r'|according\s+to\s+(?:them|him|her|someone|@[a-zA-Z0-9_\-\.]+)'
@@ -73,7 +83,9 @@ FACT_HEARSAY_PREFIX_REGEX = re.compile(
     re.IGNORECASE
 )
 
-# Media Extraction & Cleansing
+# ==============================================================================
+# MEDIA EXTRACTION, CLEANSING & ANTI-REPETITION PATTERNS
+# ==============================================================================
 MEME_GEN_REGEX = re.compile(r'\[\s*MEME_GEN\s*:\s*(.*?)\s*\]', re.IGNORECASE | re.DOTALL)
 UNCLOSED_MEME_GEN_REGEX = re.compile(r'\[\s*MEME_GEN\s*:\s*([^\]]{10,})$', re.IGNORECASE | re.DOTALL)
 IMAGE_GEN_REGEX = re.compile(r'\[\s*IMAGE_GEN\s*:\s*(.*?)\s*\]', re.IGNORECASE | re.DOTALL)
@@ -109,36 +121,74 @@ ERROR_REPLY_CAPTURE_REGEX = re.compile(
     re.IGNORECASE
 )
 
-# Bracket emote conversion
+# Bracket emote conversion & Asterisk emote extraction (for anti-repetition tracking)
 BRACKET_EMOTE_REGEX = re.compile(r'\[([a-zA-Z][a-zA-Z0-9\s,\'\-\.~!]{1,45})\](?!\()')
+ASTERISK_EMOTE_EXTRACT_REGEX = re.compile(r'\*([a-zA-Z][^*\n]{2,55})\*')
 
-# Explicit user media intent detection
+# Explicit user media intent detection (handles natural phrasing & typos like "generate and image of")
 EXPLICIT_MEME_REQ_REGEX = re.compile(
-    r'\b(generate|make|create|cook|drop|send|give|show|render|draw)\b[^\n]{0,45}\b(meme|memes|shitpost)\b'
-    r'|\b(meme\s+(?:of|about|for|when))\b',
+    r'\b(generate|make|create|cook|drop|send|give|show|render|draw)\b[^\n]{0,50}\b(meme|memes|shitpost)\b'
+    r'|\b(meme\s+(?:of|about|for|when|where))\b',
     re.IGNORECASE
 )
 EXPLICIT_IMAGE_REQ_REGEX = re.compile(
-    r'\b(generate|draw|render|make|create|show|give|send|paint|sketch|wheres|where is|still no)\b[^\n]{0,45}\b(image|pic|picture|art|photo|render|drawing|painting|portrait|loading screen|illustration|wallpaper)\b'
-    r'|\b(image|pic|picture|portrait|drawing)\s+of\b',
+    r'\b(generate|draw|render|make|create|show|give|send|paint|sketch|conjure|summon|snap|take|wheres|where is|still no)\b'
+    r'(?:\s+(?:me|us|a|an|and|some|the|another))?[^\n]{0,50}'
+    r'\b(image|pic|picture|art|artwork|photo|photograph|render|drawing|painting|portrait|selfie|loading screen|illustration|wallpaper|visual|scene)\b'
+    r'|\b(image|pic|picture|portrait|drawing|painting|selfie|illustration)\s+(?:of|for|showing|with)\b'
+    r'|\b(?:draw|paint|sketch)\s+(?:me\s+|us\s+)?(?:a|an|some|the)?\s*[a-z0-9]{3,}',
     re.IGNORECASE
+)
+USER_SUBJECT_EXTRACT_REGEX = re.compile(
+    r'(?:(?:generate|draw|render|make|create|show|give|send|paint|sketch|conjure|summon)'
+    r'(?:\s+(?:me|us))?(?:\s+(?:a|an|and|the|another))?\s+'
+    r'(?:image|pic|picture|art|photo|render|drawing|painting|portrait|illustration|meme)\s+(?:of|about|for|showing|with)\s+)'
+    r'(.+)$',
+    re.IGNORECASE | re.DOTALL
 )
 BOT_IMAGE_PROMISE_REGEX = re.compile(
     r'\b(i\'ll generate|i generated|one rendering of|here\'s the (?:image|pic|picture|render|drawing|portrait|meme)|'
     r'loading screen i generated|pull it out of the aether|give you one that\'s technically accurate|'
     r'let\'s see what we\'re working with|behold[—\-\s]|points\s+at\s+|hologram\s+flickers\s+to\s+life|'
-    r'look\s+at\s+this\s+|see\?\s+certified)\b',
+    r'look\s+at\s+this\s+|see\?\s+certified)\b'
+    r'|\*(?:raises\s+wand\s+dramatically|conjures\s+a\s+vision|snaps\s+a\s+photo|projects\s+a\s+hologram)\*',
     re.IGNORECASE
 )
 EXPLICIT_VOICE_REQ_REGEX = re.compile(
-    r'\b(generate|send|make|record|do|give)\b[^\n]{0,45}\b(voice|audio|voice clip|voice message|speech|tts|voiceline)\b'
-    r'|\b(say out loud|speak to me|talk to me|voice clip|hear your voice)\b',
+    r'\b(generate|send|make|record|do|give|drop)\b[^\n]{0,45}\b(voice|audio|voice clip|voice message|voice note|speech|tts|voiceline)\b'
+    r'|\b(say out loud|speak to me|talk to me|voice clip|hear your voice|say that in voice|read that out loud)\b',
     re.IGNORECASE
 )
 EXPLICIT_GIF_REQ_REGEX = re.compile(
     r'\b(send|post|drop|show|give)\b[^\n]{0,30}\b(gif|reaction gif|meme clip)\b',
     re.IGNORECASE
 )
+
+# High-engagement conversational hooks (used to modulate spontaneous human-like chime-ins & reactions)
+TOPIC_INTEREST_CUES_REGEX = re.compile(
+    r'(?:\?\s*$|\b(?:what do (?:you|yall|you guys) think|thoughts on|hot take|unpopular opinion|rate my|look at this|check this out|anyone else|who here|am i crazy|be honest)\b)',
+    re.IGNORECASE
+)
+
+# Stock/cliche meme punchlines that bots must not repeat across turns
+OVERUSED_MEME_CAPTIONS = {
+    "absolutely unacceptable",
+    "bottom text",
+    "top text",
+    "when a peasant compares you to that pink catchphrase disaster",
+    "when someone offers you a green apple after your daily limit"
+}
+
+# Dynamic human-like spontaneity micro-impulses (injected lightly to keep bots organic, unpredictable & lifelike)
+SPONTANEOUS_MICRO_MOMENTS = [
+    "React like a real person hanging out in Discord: jump straight into your point or reaction without a formulaic opening.",
+    "Notice a specific, quirky detail in what was just said or shown and riff on that exact detail instead of giving a generic summary.",
+    "Keep your cadence punchy and spontaneous—skip repetitive physical stage directions and let your word choice carry your personality.",
+    "If the moment calls for it, playfully challenge, tease, or ask a sharp follow-up question back to the speaker like a real friend/rival in chat.",
+    "Vary your rhythm: you don't need a three-part monologue every turn; a sharp, natural 1-2 sentence remark or spontaneous visual observation feels much more alive.",
+    "Connect the current message to the ongoing vibe or a recent joke in the channel if it fits naturally, without forcing it.",
+    "Express a genuine, in-the-moment mood shift (amused, skeptical, intrigued, unimpressed, or hyped) based on the exact topic being discussed."
+]
 
 # Kaomoji/Emoticons to strip from TTS
 TTS_KAOMOJI_STRIP_REGEX = re.compile(
@@ -180,6 +230,7 @@ MIMO_AUDIO_TAG_MAP = {
     "ahem": "cough",
     "scoff": "sneer",
     "scoffs": "sneer",
+    "sneers": "sneer",
     "whimpers": "whimper",
     "sobs": "sob",
     "cries": "sob",

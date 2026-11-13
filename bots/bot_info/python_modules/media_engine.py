@@ -9,7 +9,7 @@ from io import BytesIO
 
 import discord
 import cv2
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from config import (
     MAX_DOWNLOAD_BYTES, YT_REGEX, TENOR_REGEX, GIPHY_REGEX,
@@ -20,10 +20,25 @@ from config import (
 from core_system import get_http_session, sanitize_url
 
 # ==============================================================================
-# VISION, MULTI-FRAME VIDEO/GIF STORYBOARDS & MEDIA FETCHING
+# VISION, MULTI-FRAME VIDEO/GIF STORYBOARDS, STICKERS & MEDIA FETCHING
 # ==============================================================================
 
+GIPHY_SPAM_MISMATCH_TERMS = {
+    "birthday", "bday", "voting", "ballot", "election", "hanukkah",
+    "christmas", "new year", "anniversary", "graduation", "mothers day",
+    "fathers day", "good morning", "happy friday", "happy monday",
+    "happy tuesday", "happy wednesday", "happy thursday", "happy saturday",
+    "happy sunday", "baby shower", "wedding", "crypto", "nft", "subscribe",
+    "real estate", "valentines day", "easter", "thanksgiving"
+}
+
+
 async def fetch_online_gif(search_query: str, giphy_key: str) -> str:
+    """
+    Searches Giphy for a reaction GIF matching `search_query`, filtering out
+    unrelated holiday/greeting/election spam and scoring candidates by token,
+    phrase, and aspect-ratio quality.
+    """
     if not giphy_key or not search_query:
         return ""
     clean_q = re.sub(r'[^\w\s\-]', '', search_query).strip()
@@ -35,12 +50,7 @@ async def fetch_online_gif(search_query: str, giphy_key: str) -> str:
     if not meaningful_words:
         meaningful_words = q_words
 
-    # Words that Giphy notoriously spams on generic queries ("happy", "vote", "party")
-    spam_Mismatch_terms = {
-        "birthday", "bday", "voting", "ballot", "election", "hanukkah",
-        "christmas", "new year", "anniversary", "graduation", "mothers day", "fathers day"
-    }
-    allowed_spam = {t for t in spam_Mismatch_terms if t in clean_q.lower()}
+    allowed_spam = {t for t in GIPHY_SPAM_MISMATCH_TERMS if t in clean_q.lower()}
 
     searches = [clean_q]
     if len(meaningful_words) > 3:
@@ -51,7 +61,7 @@ async def fetch_online_gif(search_query: str, giphy_key: str) -> str:
     for query in searches:
         try:
             url = sanitize_url(
-                f"https://api.giphy.com/v1/gifs/search?api_key={giphy_key}&q={urllib.parse.quote(query)}&limit=12&rating=pg-13&lang=en"
+                f"https://api.giphy.com/v1/gifs/search?api_key={giphy_key}&q={urllib.parse.quote(query)}&limit=15&rating=pg-13&lang=en"
             )
             res = await asyncio.to_thread(lambda u=url: get_http_session().get(u, timeout=6))
             if res.status_code != 200:
@@ -61,31 +71,53 @@ async def fetch_online_gif(search_query: str, giphy_key: str) -> str:
                 continue
 
             scored_candidates = []
-            for item in data:
-                gif_url = item.get("images", {}).get("original", {}).get("url", "")
+            for rank_idx, item in enumerate(data):
+                orig = item.get("images", {}).get("original", {})
+                gif_url = orig.get("url", "")
                 if not gif_url:
                     continue
+
                 title_slug = f"{item.get('title', '')} {item.get('slug', '')}".lower().replace("-", " ")
 
                 # Reject unrelated birthday/voting/holiday cards unless the query asked for them
-                if any(bad in title_slug for bad in (spam_Mismatch_terms - allowed_spam)):
+                if any(bad in title_slug for bad in (GIPHY_SPAM_MISMATCH_TERMS - allowed_spam)):
                     continue
+
+                # Avoid ultra-skinny banner GIFs if dimensions are available
+                try:
+                    gw = int(orig.get("width", 0) or 0)
+                    gh = int(orig.get("height", 0) or 0)
+                    if gw > 0 and gh > 0:
+                        aspect = gw / float(gh)
+                        if aspect > 3.2 or aspect < 0.30:
+                            continue
+                except Exception:
+                    pass
 
                 title_tokens = set(re.findall(r'[a-z0-9]+', title_slug))
                 overlap = len(set(meaningful_words) & title_tokens)
-                scored_candidates.append((overlap, gif_url))
+                phrase_bonus = 1.5 if " ".join(meaningful_words[:2]) in title_slug else 0.0
+                rank_bonus = max(0.0, (15 - rank_idx) * 0.05)
+                total_score = overlap + phrase_bonus + rank_bonus
+                scored_candidates.append((total_score, overlap, gif_url))
 
             if scored_candidates:
                 scored_candidates.sort(key=lambda x: x[0], reverse=True)
-                best_score = scored_candidates[0][0]
-                top_matches = [u for sc, u in scored_candidates if sc == best_score][:2]
-                return random.choice(top_matches)
+                best_overlap = scored_candidates[0][1]
+                top_matches = [u for sc, ov, u in scored_candidates if ov == best_overlap][:3]
+                return random.choice(top_matches if top_matches else [scored_candidates[0][2]])
         except Exception:
             continue
     return ""
 
 
 async def get_youtube_metadata(text: str) -> str:
+    """
+    Fetches YouTube video title and channel name via YouTube's oEmbed endpoint
+    so bots can understand linked videos without needing an API key.
+    """
+    if not text:
+        return ""
     yt_match = YT_REGEX.search(text)
     if yt_match:
         try:
@@ -94,34 +126,50 @@ async def get_youtube_metadata(text: str) -> str:
             res = await asyncio.to_thread(lambda: get_http_session().get(oembed_url, timeout=4))
             if res.status_code == 200:
                 data = res.json()
-                return f"[Contains YouTube Video: '{data.get('title', 'Unknown')}' by '{data.get('author_name', 'Unknown')}']"
+                title = data.get("title", "Unknown").strip()
+                author = data.get("author_name", "Unknown").strip()
+                return f"[Contains YouTube Video: '{title}' by '{author}']"
         except Exception:
             pass
     return ""
 
 
+def _clean_extracted_slug(raw_slug: str) -> str:
+    """Removes trailing numeric IDs and hash tokens from GIF URL slugs."""
+    slug = raw_slug.replace('-', ' ').replace('_', ' ').strip()
+    slug = re.sub(r'\b\d{4,}\b', '', slug).strip()
+    slug = re.sub(r'\s{2,}', ' ', slug).strip()
+    return slug
+
+
 def extract_gif_slug(text: str) -> str:
+    if not text:
+        return ""
     tenor_match = TENOR_REGEX.search(text)
     if tenor_match:
-        return tenor_match.group(1).replace('-', ' ')
+        return _clean_extracted_slug(tenor_match.group(1))
     giphy_match = GIPHY_REGEX.search(text)
     if giphy_match:
         slug_words = giphy_match.group(1).split('-')
-        return " ".join(slug_words[:-1]) if len(slug_words) > 1 else giphy_match.group(1).replace('-', ' ')
+        raw = " ".join(slug_words[:-1]) if len(slug_words) > 1 else giphy_match.group(1)
+        return _clean_extracted_slug(raw)
     klipy_match = KLIPY_REGEX.search(text)
     if klipy_match:
-        slug = klipy_match.group(1).replace('-', ' ')
-        slug = re.sub(r'\s+\d{4,}$', '', slug).strip()
-        return slug
+        return _clean_extracted_slug(klipy_match.group(1))
     direct_gif = DIRECT_GIF_URL_REGEX.search(text)
     if direct_gif:
-        slug = direct_gif.group(1).replace('-', ' ').replace('_', ' ')
-        if not slug.isdigit() and slug.lower() not in ("giphy", "tenor", "image", "media", "output"):
+        slug = _clean_extracted_slug(direct_gif.group(1))
+        if slug and not slug.isdigit() and slug.lower() not in ("giphy", "tenor", "image", "media", "output", "animation", "video"):
             return slug
     return ""
 
 
-def _convert_pil_frame_to_rgb(img: Image.Image) -> Image.Image:
+def _convert_pil_frame_to_rgb(img: Image.Image, apply_exif: bool = False) -> Image.Image:
+    if apply_exif:
+        try:
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
     if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
         rgba = img.convert("RGBA")
         bg = Image.new("RGBA", rgba.size, (43, 45, 49, 255))
@@ -139,6 +187,22 @@ def _frames_have_meaningful_motion(frames: list[Image.Image], diff_threshold: fl
         if mean_diff >= diff_threshold:
             return True
     return False
+
+
+def _stamp_panel_index(panel: Image.Image, index_num: int) -> Image.Image:
+    """
+    Stamps a subtle, tiny sequence badge ('1', '2', '3', '4') in the top-left
+    corner of each storyboard panel so Vision models reliably read temporal order.
+    """
+    try:
+        out = panel.copy()
+        draw = ImageDraw.Draw(out)
+        badge_w, badge_h = 18, 18
+        draw.rectangle([(4, 4), (4 + badge_w, 4 + badge_h)], fill=(20, 22, 25))
+        draw.text((10, 6), str(index_num), fill=(235, 235, 240))
+        return out
+    except Exception:
+        return panel
 
 
 def _build_multi_frame_grid(frames: list[Image.Image], max_dim: int = 1024) -> bytes | None:
@@ -163,8 +227,10 @@ def _build_multi_frame_grid(frames: list[Image.Image], max_dim: int = 1024) -> b
 
     if len(frames) == 2:
         canvas = Image.new("RGB", (fw * 2 + gap, fh), bg_color)
-        canvas.paste(frames[0], (0, 0))
-        canvas.paste(frames[1].resize((fw, fh), Image.Resampling.LANCZOS), (fw + gap, 0))
+        f0 = _stamp_panel_index(frames[0], 1)
+        f1 = _stamp_panel_index(frames[1].resize((fw, fh), Image.Resampling.LANCZOS), 2)
+        canvas.paste(f0, (0, 0))
+        canvas.paste(f1, (fw + gap, 0))
     else:
         grid_frames = list(frames[:4])
         while len(grid_frames) < 4:
@@ -177,8 +243,12 @@ def _build_multi_frame_grid(frames: list[Image.Image], max_dim: int = 1024) -> b
             (fw + gap, fh + gap)
         ]
         for idx, pos in enumerate(positions):
-            f_resized = grid_frames[idx] if grid_frames[idx].size == (fw, fh) else grid_frames[idx].resize((fw, fh), Image.Resampling.LANCZOS)
-            canvas.paste(f_resized, pos)
+            f_resized = (
+                grid_frames[idx]
+                if grid_frames[idx].size == (fw, fh)
+                else grid_frames[idx].resize((fw, fh), Image.Resampling.LANCZOS)
+            )
+            canvas.paste(_stamp_panel_index(f_resized, idx + 1), pos)
 
     if max(canvas.width, canvas.height) > max_dim:
         canvas.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
@@ -190,8 +260,8 @@ def _build_multi_frame_grid(frames: list[Image.Image], max_dim: int = 1024) -> b
 
 def preprocess_image_bytes(image_bytes: bytes, max_dim: int = 1024) -> bytes | None:
     """
-    Processes both static images and multi-frame animated GIFs/WebPs:
-    - Static images are resized and encoded cleanly as PNG.
+    Processes both static images and multi-frame animated GIFs/WebPs/APNGs:
+    - Static images are EXIF-oriented, resized, and encoded cleanly as PNG.
     - Multi-frame animated GIFs/WebPs sample 4 chronological keyframes (10%, 36%, 64%, 90%)
       into a 2x2 storyboard grid.
     """
@@ -203,7 +273,7 @@ def preprocess_image_bytes(image_bytes: bytes, max_dim: int = 1024) -> bytes | N
             is_anim = getattr(img, "is_animated", False) and n_frames > 1
 
             if not is_anim:
-                rgb_img = _convert_pil_frame_to_rgb(img)
+                rgb_img = _convert_pil_frame_to_rgb(img, apply_exif=True)
                 return _build_multi_frame_grid([rgb_img], max_dim=max_dim)
 
             if n_frames >= 4:
@@ -225,13 +295,13 @@ def preprocess_image_bytes(image_bytes: bytes, max_dim: int = 1024) -> bytes | N
             for f_idx in target_indices:
                 try:
                     img.seek(f_idx)
-                    sampled_frames.append(_convert_pil_frame_to_rgb(img))
+                    sampled_frames.append(_convert_pil_frame_to_rgb(img, apply_exif=False))
                 except Exception:
                     continue
 
             if not sampled_frames:
                 img.seek(0)
-                sampled_frames.append(_convert_pil_frame_to_rgb(img))
+                sampled_frames.append(_convert_pil_frame_to_rgb(img, apply_exif=False))
 
             return _build_multi_frame_grid(sampled_frames, max_dim=max_dim)
     except Exception:
@@ -241,7 +311,8 @@ def preprocess_image_bytes(image_bytes: bytes, max_dim: int = 1024) -> bytes | N
 def extract_video_frame_bytes(raw_bytes: bytes, suffix: str = ".mp4") -> bytes | None:
     """
     Samples up to 4 chronological keyframes across the video (~10%, ~36%, ~64%, ~90%),
-    avoiding black fade-in/fade-out frames, and builds a 2x2 chronological storyboard grid.
+    scoring both contrast and Laplacian sharpness to avoid black fade-ins or motion blur,
+    and builds a 2x2 chronological storyboard grid.
     """
     if not raw_bytes or len(raw_bytes) > MAX_DOWNLOAD_BYTES:
         return None
@@ -288,12 +359,14 @@ def extract_video_frame_bytes(raw_bytes: bytes, suffix: str = ".mp4") -> bytes |
                     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                     mean_lum = float(gray.mean())
                     std_contrast = float(gray.std())
+                    sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
                     lum_penalty = 0.15 if (mean_lum < 14 or mean_lum > 245) else 1.0
-                    score = std_contrast * lum_penalty
+                    sharp_bonus = min(25.0, sharpness * 0.04)
+                    score = (std_contrast + sharp_bonus) * lum_penalty
                     if score > best_local_score:
                         best_local_score = score
                         best_local_frame = frame
-                    if lum_penalty == 1.0 and std_contrast >= 18.0:
+                    if lum_penalty == 1.0 and std_contrast >= 20.0 and sharpness >= 65.0:
                         break
 
             if best_local_frame is not None:
@@ -323,6 +396,8 @@ async def safe_download_url_bytes(url: str, timeout: int = 8) -> tuple[bytes | N
     Safely downloads up to MAX_DOWNLOAD_BYTES from a URL and returns (bytes, content_type).
     """
     clean_url = sanitize_url(url)
+    if not clean_url:
+        return None, ""
 
     def _fetch():
         with get_http_session().get(
@@ -354,11 +429,11 @@ async def safe_download_url_bytes(url: str, timeout: int = 8) -> tuple[bytes | N
 
 
 async def fetch_image_bytes_from_message(message: discord.Message) -> bytes | None:
-    valid_img_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+    valid_img_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".apng")
     valid_vid_exts = (".mp4", ".mov", ".webm", ".avi")
 
     # 1. Direct message attachments
-    for att in message.attachments:
+    for att in getattr(message, "attachments", []):
         if att.size and att.size > MAX_DOWNLOAD_BYTES:
             continue
         url_lower = att.filename.lower()
@@ -382,12 +457,22 @@ async def fetch_image_bytes_from_message(message: discord.Message) -> bytes | No
             except Exception:
                 pass
 
-    urls = URL_REGEX.findall(message.content)
+    # 2. Discord Stickers (custom PNG/APNG/GIF server stickers)
+    for sticker in getattr(message, "stickers", []):
+        sticker_url = getattr(sticker, "url", None)
+        if sticker_url and not str(sticker_url).lower().endswith(".json"):
+            raw_bytes, _ = await safe_download_url_bytes(str(sticker_url), timeout=6)
+            if raw_bytes:
+                processed = await asyncio.to_thread(preprocess_image_bytes, raw_bytes)
+                if processed:
+                    return processed
+
+    urls = URL_REGEX.findall(message.content or "")
     if urls and not message.embeds:
         await asyncio.sleep(0.65)
 
-    # 2. Message embeds
-    for embed in message.embeds:
+    # 3. Message embeds
+    for embed in getattr(message, "embeds", []):
         for embed_media in [getattr(embed, "video", None), embed.image, embed.thumbnail]:
             if not embed_media:
                 continue
@@ -402,7 +487,7 @@ async def fetch_image_bytes_from_message(message: discord.Message) -> bytes | No
                     if processed:
                         return processed
 
-    # 3. Direct URLs & HTML OpenGraph fallback
+    # 4. Direct URLs & HTML OpenGraph fallback
     for url in urls:
         clean_url = url.strip().rstrip(")>.,")
         raw_bytes, content_type = await safe_download_url_bytes(clean_url, timeout=8)
@@ -418,7 +503,7 @@ async def fetch_image_bytes_from_message(message: discord.Message) -> bytes | No
             if processed:
                 return processed
         elif "text/html" in content_type:
-            html_text = raw_bytes[:30000].decode("utf-8", errors="ignore")
+            html_text = raw_bytes[:35000].decode("utf-8", errors="ignore")
             og_vid_match = OG_VIDEO_REGEX_1.search(html_text) or OG_VIDEO_REGEX_2.search(html_text)
             if og_vid_match:
                 og_v_url = html.unescape(og_vid_match.group(1).strip())
@@ -445,11 +530,12 @@ async def fetch_image_bytes_from_message(message: discord.Message) -> bytes | No
                         return processed
     return None
 
+
 def render_meme_captions(image_bytes: bytes, top_text: str = "", bottom_text: str = "") -> bytes:
     """
-    Overlays classic Impact/bold white meme text with a thick black stroke onto
-    the top and/or bottom of generated image bytes, dynamically scaling font size
-    so longer punchlines never get clipped.
+    Overlays classic Impact/bold white meme text with a thick black stroke and
+    subtle drop shadow onto the top and/or bottom of generated image bytes,
+    dynamically auto-fitting font size so longer punchlines never clip horizontally.
     """
     if not image_bytes or (not top_text.strip() and not bottom_text.strip()):
         return image_bytes
@@ -482,31 +568,44 @@ def render_meme_captions(image_bytes: bytes, top_text: str = "", bottom_text: st
             except TypeError:
                 return ImageFont.load_default()
 
-        def _wrap_and_draw(text_str: str, is_top: bool):
-            clean = text_str.strip().upper()
-            if not clean:
-                return
-
-            # Scale font size down slightly for longer captions so they fit within 3 lines
-            scale_factor = 0.075 if len(clean) <= 42 else (0.062 if len(clean) <= 75 else 0.052)
-            font_size = max(22, int(h * scale_factor))
-            font = _load_font(font_size)
-
-            words = clean.split()
+        def _wrap_lines(words: list[str], font, max_w: int) -> tuple[list[str], int]:
             lines = []
             current_line = []
-            max_width = int(w * 0.92)
-
+            widest_line = 0
             for word in words:
                 test_line = " ".join(current_line + [word])
                 bbox = draw.textbbox((0, 0), test_line, font=font)
-                if (bbox[2] - bbox[0]) <= max_width or not current_line:
+                tw = bbox[2] - bbox[0]
+                if tw <= max_w or not current_line:
                     current_line.append(word)
+                    widest_line = max(widest_line, tw)
                 else:
                     lines.append(" ".join(current_line))
                     current_line = [word]
+                    w_bbox = draw.textbbox((0, 0), word, font=font)
+                    widest_line = max(widest_line, w_bbox[2] - w_bbox[0])
             if current_line:
                 lines.append(" ".join(current_line))
+            return lines, widest_line
+
+        def _wrap_and_draw(text_str: str, is_top: bool):
+            clean = re.sub(r'\s+', ' ', text_str.strip()).upper()
+            if not clean:
+                return
+
+            scale_factor = 0.075 if len(clean) <= 38 else (0.062 if len(clean) <= 72 else 0.052)
+            font_size = max(20, int(h * scale_factor))
+            max_width = int(w * 0.92)
+            words = clean.split()
+
+            font = _load_font(font_size)
+            lines, widest = _wrap_lines(words, font, max_width)
+
+            # Auto-fit loop: step font size down if too many lines or a long word overflows max_width
+            while (len(lines) > 3 or widest > max_width) and font_size > 18:
+                font_size = max(18, int(font_size * 0.88))
+                font = _load_font(font_size)
+                lines, widest = _wrap_lines(words, font, max_width)
 
             lines = lines[:4]
             line_heights = []
@@ -517,12 +616,22 @@ def render_meme_captions(image_bytes: bytes, top_text: str = "", bottom_text: st
             total_block_h = sum(line_heights)
             margin_y = int(h * 0.035)
             y_cursor = margin_y if is_top else max(margin_y, h - total_block_h - margin_y)
-            stroke_w = max(3, int(font_size * 0.09))
+            stroke_w = max(3, int(font_size * 0.095))
+            shadow_offset = max(2, int(font_size * 0.04))
 
             for idx, ln in enumerate(lines):
                 bbox = draw.textbbox((0, 0), ln, font=font)
                 lw = bbox[2] - bbox[0]
-                x_pos = max(10, (w - lw) // 2)
+                x_pos = max(8, (w - lw) // 2 - bbox[0])
+                # Subtle drop shadow for high contrast over bright backgrounds
+                draw.text(
+                    (x_pos + shadow_offset, y_cursor + shadow_offset),
+                    ln,
+                    font=font,
+                    fill=(0, 0, 0, 180),
+                    stroke_width=stroke_w,
+                    stroke_fill=(0, 0, 0, 180)
+                )
                 draw.text(
                     (x_pos, y_cursor),
                     ln,

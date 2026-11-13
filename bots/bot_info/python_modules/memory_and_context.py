@@ -2,17 +2,29 @@ import re
 import json
 import copy
 import time
+import random
+from collections import Counter
 
 from config import (
     STOPWORDS, FACT_HEARSAY_PREFIX_REGEX, THIRD_PARTY_REPORT_REGEX,
     JSON_EMOJI_REGEX, ERROR_REPLY_STRIP_REGEX, ERROR_REPLY_CAPTURE_REGEX,
-    FALLBACK_IMAGE_NOTE_REGEX, IMAGE_DESC_STRIP_REGEX
+    FALLBACK_IMAGE_NOTE_REGEX, IMAGE_DESC_STRIP_REGEX, IMAGE_DESC_EXTRACT_REGEX,
+    OVERUSED_MEME_CAPTIONS, SPONTANEOUS_MICRO_MOMENTS
 )
 from core_system import post_with_backoff, update_json_file
+from text_and_parsers import extract_used_emotes, parse_meme_gen_tag
 
 # ==============================================================================
 # MEMORY DEDUPLICATION, HEARSAY FILTER & CONVERSATION HISTORY BUILDER
 # ==============================================================================
+
+EPHEMERAL_USER_FACT_REGEX = re.compile(
+    r'\b(?:asked\s+(?:for|to|about)|requested\s+a|posted\s+a\s+(?:meme|gif|link|pic|screenshot)|'
+    r'sent\s+a\s+(?:message|meme|gif|screenshot)|is\s+currently\s+(?:chatting|talking|online|typing)|'
+    r'pinged\s+|mentioned\s+bot|replied\s+to\s+)\b',
+    re.IGNORECASE
+)
+
 
 def extract_glitch_summary(raw_text: str) -> str:
     """
@@ -28,7 +40,7 @@ def extract_glitch_summary(raw_text: str) -> str:
     cleaned_parts = []
     for m in matches:
         s = re.sub(r'^System:\s*', '', m.strip(), flags=re.IGNORECASE)
-        s = re.sub(r'\s*Try again in a moment\.?', '', s, flags=re.IGNORECASE).strip()
+        s = re.sub(r'\s*Try again in a moment\.?$', '', s, flags=re.IGNORECASE).strip()
         if s:
             cleaned_parts.append(s)
     return "; ".join(cleaned_parts)
@@ -53,6 +65,8 @@ def strip_old_image_data(history: list, keep_images: int = 0) -> list:
 
 
 def normalize_tokens(text: str) -> set[str]:
+    if not text:
+        return set()
     words = re.findall(r'[a-z0-9]+', text.lower())
     return {w for w in words if len(w) > 2 and w not in STOPWORDS}
 
@@ -99,12 +113,13 @@ def find_canonical_username(uname: str, user_profiles: dict, recent_users: set[s
 
 def is_misattributed_hearsay(fact: str, target_user: str, speaker_name: str, user_message: str) -> bool:
     """
-    Deterministic filter that catches third-party reported speech / hearsay.
+    Deterministic filter that catches third-party reported speech / hearsay
+    and ephemeral one-off chat actions (like 'asked for an image').
     """
     if not fact or not user_message:
         return False
 
-    if FACT_HEARSAY_PREFIX_REGEX.search(fact):
+    if FACT_HEARSAY_PREFIX_REGEX.search(fact) or EPHEMERAL_USER_FACT_REGEX.search(fact):
         return True
 
     if target_user.strip().lower() != speaker_name.strip().lower():
@@ -134,7 +149,11 @@ def is_misattributed_hearsay(fact: str, target_user: str, speaker_name: str, use
     if overlap_with_reported >= 0.45 and overlap_with_before < 0.40:
         return True
 
-    if re.search(r'\bi\s+(?:said|told\s+\w+)\s+(?:that\s+)?(?:they|he|she|someone)\s+(?:said|told|claimed|thinks|thought)\b', msg_clean, re.IGNORECASE):
+    if re.search(
+        r'\bi\s+(?:said|told\s+\w+)\s+(?:that\s+)?(?:they|he|she|someone)\s+(?:said|told|claimed|thinks|thought)\b',
+        msg_clean,
+        re.IGNORECASE
+    ):
         if overlap_with_reported >= 0.30:
             return True
 
@@ -166,7 +185,7 @@ async def verify_and_resolve_user_facts(
         if canonical_uname.lower() == my_bot_name.lower() or canonical_uname.lower() in other_bot_names:
             continue
         if is_misattributed_hearsay(clean_fact, canonical_uname, speaker_name, recent_user_prompt):
-            print(f"[{my_bot_name}] [MEMORY FILTER] Blocked hearsay misattribution to {canonical_uname}: '{clean_fact}'")
+            print(f"[{my_bot_name}] [MEMORY FILTER] Blocked hearsay/ephemeral fact for {canonical_uname}: '{clean_fact}'")
             continue
         pre_filtered.append((canonical_uname, clean_fact))
 
@@ -201,10 +220,10 @@ async def verify_and_resolve_user_facts(
         f"Recent Conversation:\n{context_block}\n\n"
         f"Candidate Facts to Verify:\n{candidates_json}\n\n"
         "RULES:\n"
-        "1. Mark status as \"VALID\" ONLY if `target_user` directly stated, owned, or confirmed `fact` about THEMSELVES.\n"
+        "1. Mark status as \"VALID\" ONLY if `target_user` directly stated, owned, or confirmed `fact` as a real personal trait, hobby, relationship, preference, or life detail about THEMSELVES.\n"
         "2. If the speaker was quoting or reporting what a third party said (e.g., \"they said...\", \"he told me...\"), mark status as \"REJECT\".\n"
         "3. If the statement is clearly a true fact about a DIFFERENT explicitly named Known Server Member, mark status as \"REATTRIBUTE\" and set `target_user` to that member's exact name.\n"
-        "4. If the statement is pure sarcasm, roleplay banter, or a temporary state, mark status as \"REJECT\".\n"
+        "4. If the statement is pure sarcasm, roleplay banter, or a one-time chat command (e.g., 'asked for an image'), mark status as \"REJECT\".\n"
         "Return ONLY valid JSON in this exact format:\n"
         "{\"results\": [{\"index\": 0, \"status\": \"VALID\", \"target_user\": \"Name\", \"fact\": \"fact text\"}]}"
     )
@@ -240,7 +259,7 @@ async def verify_and_resolve_user_facts(
                     t_user = str(item.get("target_user", "")).strip()
                     f_text = str(item.get("fact", "")).strip().rstrip(".")
                     if status == "REJECT" or not t_user or not f_text:
-                        print(f"[{my_bot_name}] [MEMORY VERIFIER] Rejected misattributed/hearsay fact: '{f_text}'")
+                        print(f"[{my_bot_name}] [MEMORY VERIFIER] Rejected misattributed/ephemeral fact: '{f_text}'")
                         continue
                     if status in ("VALID", "REATTRIBUTE"):
                         canon_target = find_canonical_username(t_user, user_profiles, recent_users)
@@ -256,6 +275,51 @@ async def verify_and_resolve_user_facts(
     return pre_filtered
 
 
+def _extract_repeated_phrase_templates(own_texts: list[str]) -> list[str]:
+    """
+    Detects 4-word to 6-word conversational clichés that the bot has repeated
+    across 2+ of its own recent messages (e.g. 'rather be cursed with', 'pinnacle of magical achievement',
+    'oh look a peasant') so the system prompt can actively forbid repeating them.
+    """
+    if len(own_texts) < 2:
+        return []
+
+    ngram_doc_counts = Counter()
+    for txt in own_texts[-6:]:
+        # Strip *emotes* before scanning for repeated verbal stock templates
+        cleaned = re.sub(r'\*[^*]+\*', ' ', txt.lower())
+        words = re.findall(r"[a-z']+", cleaned)
+        seen_in_msg = set()
+        for n in (6, 5, 4):
+            if len(words) >= n:
+                for i in range(len(words) - n + 1):
+                    gram = " ".join(words[i:i + n])
+                    if len(gram) >= 15:
+                        seen_in_msg.add(gram)
+        for g in seen_in_msg:
+            ngram_doc_counts[g] += 1
+
+    candidates = [
+        (count, len(gram.split()), len(gram), gram)
+        for gram, count in ngram_doc_counts.items()
+        if count >= 2
+    ]
+    candidates.sort(reverse=True)
+
+    filtered = []
+    for _, _, _, g in candidates:
+        g_words = set(g.split())
+        if any(
+            g in other or other in g or (len(g_words & set(other.split())) / float(min(len(g_words), len(other.split()))) >= 0.65)
+            for other in filtered
+        ):
+            continue
+        filtered.append(g)
+        if len(filtered) >= 4:
+            break
+    return filtered
+
+
 def build_api_messages_from_history(
     dynamic_system: dict,
     raw_history: list[dict],
@@ -264,11 +328,30 @@ def build_api_messages_from_history(
 ) -> list[dict]:
     """
     Builds clean conversation history for the LLM, annotating when a user message
-    was addressed to a DIFFERENT bot so this bot never misattributes questions or names.
+    was addressed to a DIFFERENT bot, tracking the bot's own recent emotes, openers,
+    stock phrases, and meme captions to prevent repetitive loops, and injecting
+    organic human-like spontaneity cues.
     """
     api_messages = [dynamic_system]
     seen_msg_ids = set()
     own_recent_openers = []
+    own_recent_texts = []
+    own_emote_counter = Counter()
+    recent_meme_captions = []
+    active_human_speakers = []
+
+    # Identify the index of the most recent self-generated media turn so older turns
+    # don't flood the assistant history with `[MEME_GEN: ...]` tags on every message.
+    last_self_media_idx = -1
+    for idx in range(len(raw_history) - 1, -1, -1):
+        m = raw_history[idx]
+        is_self_chk = (
+            m.get("author_id") == bot_user_id
+            or (m.get("role") == "assistant" and m.get("author_name") == bot_display_name)
+        )
+        if is_self_chk and (m.get("meme_spec") or m.get("img_prompt") or m.get("gif_query")):
+            last_self_media_idx = idx
+            break
 
     for idx, msg in enumerate(raw_history):
         msg_id = msg.get("message_id")
@@ -300,6 +383,12 @@ def build_api_messages_from_history(
             saved_meme_spec = msg.get("meme_spec")
             saved_gif_query = msg.get("gif_query")
 
+            if saved_meme_spec:
+                _, t_cap, b_cap = parse_meme_gen_tag(saved_meme_spec)
+                for cap in (t_cap, b_cap):
+                    if cap and cap.lower() not in recent_meme_captions:
+                        recent_meme_captions.append(cap.upper())
+
             own_text = ERROR_REPLY_STRIP_REGEX.sub('', own_text).strip()
             own_text = re.sub(r'\*\(System Note:.*?\)\*', '', own_text, flags=re.IGNORECASE).strip()
             own_text = re.sub(r'\*\([^)]*learned (?:server fact|general fact|about).*?\)\*', '', own_text, flags=re.IGNORECASE).strip()
@@ -316,16 +405,32 @@ def build_api_messages_from_history(
                     })
                 continue
 
-            words = own_text.split()
-            if len(words) >= 3:
-                own_recent_openers.append(" ".join(words[:3]).lower())
+            if idx >= len(raw_history) - 12 and own_text:
+                own_recent_texts.append(own_text)
+                for em in extract_used_emotes(own_text):
+                    own_emote_counter[em] += 1
+                # Strip leading emote to also capture the actual spoken sentence opener
+                spoken_only = re.sub(r'^\s*\*[^*]+\*\s*', '', own_text).strip()
+                words_raw = own_text.split()
+                words_spoken = spoken_only.split()
+                if len(words_raw) >= 3:
+                    own_recent_openers.append(" ".join(words_raw[:4]).lower())
+                if len(words_spoken) >= 3:
+                    sp_opener = " ".join(words_spoken[:4]).lower()
+                    if sp_opener not in own_recent_openers:
+                        own_recent_openers.append(sp_opener)
 
-            if saved_meme_spec and "[MEME_GEN:" not in own_text:
-                own_text = f"{own_text} [MEME_GEN: {saved_meme_spec}]".strip()
-            elif saved_img_prompt and "[IMAGE_GEN:" not in own_text:
-                own_text = f"{own_text} [IMAGE_GEN: {saved_img_prompt}]".strip()
-            elif saved_gif_query and "[GIF:" not in own_text:
-                own_text = f"{own_text} [GIF: {saved_gif_query}]".strip()
+            # Only attach the literal media tag on the most recent media turn so the LLM
+            # doesn't assume it must attach a [MEME_GEN:] tag to 100% of its responses,
+            # and redact the old caption text in history so it never copy-pastes old captions.
+            if idx == last_self_media_idx:
+                if saved_meme_spec and "[MEME_GEN:" not in own_text:
+                    v_scene, _, _ = parse_meme_gen_tag(saved_meme_spec)
+                    own_text = f"{own_text} [IMAGE_GEN: {v_scene}]".strip()
+                elif saved_img_prompt and "[IMAGE_GEN:" not in own_text:
+                    own_text = f"{own_text} [IMAGE_GEN: {saved_img_prompt}]".strip()
+                elif saved_gif_query and "[GIF:" not in own_text:
+                    own_text = f"{own_text} [GIF: {saved_gif_query}]".strip()
 
             if own_text:
                 api_messages.append({"role": "assistant", "content": own_text})
@@ -337,6 +442,9 @@ def build_api_messages_from_history(
         else:
             other_text = content
             author_name = msg.get("author_name", "User")
+            if not msg.get("author_is_bot") and author_name and author_name not in active_human_speakers:
+                active_human_speakers.append(author_name)
+
             addressed_bot = msg.get("addressed_bot")
             glitch_summary = extract_glitch_summary(other_text)
             other_text = ERROR_REPLY_STRIP_REGEX.sub('', other_text).strip()
@@ -393,11 +501,46 @@ def build_api_messages_from_history(
                     "content": f"[System Glitch Event: {author_name} also hit a media glitch ({glitch_summary}) on that message.]"
                 })
 
+    # Build a rich, dynamic Variety, Anti-Loop & Human Spontaneity guidance block
+    variety_rules = []
     if len(own_recent_openers) >= 2:
-        recent_openers_str = ", ".join(f"'{op}...'" for op in own_recent_openers[-3:])
+        recent_openers_str = ", ".join(f"'{op}...'" for op in own_recent_openers[-4:])
+        variety_rules.append(
+            f"- **VARY YOUR SENTENCE OPENINGS**: Do NOT start your message with any of your recent openers ({recent_openers_str})."
+        )
+
+    overused_emotes = [f"*{em}*" for em, cnt in own_emote_counter.most_common(5) if cnt >= 1]
+    if overused_emotes:
+        variety_rules.append(
+            f"- **NO REPEATED STAGE DIRECTIONS**: You recently used {', '.join(overused_emotes[:4])}. "
+            "Do NOT reuse those exact physical emotes on this turn—either use completely fresh body language or skip asterisk stage directions entirely and let your dialogue carry the attitude!"
+        )
+
+    repeated_templates = _extract_repeated_phrase_templates(own_recent_texts)
+    if repeated_templates:
+        tpl_str = ", ".join(f'"{t}"' for t in repeated_templates)
+        variety_rules.append(
+            f"- **BREAK FORMULAIC TEMPLATES**: You have already used the phrase pattern(s) {tpl_str} in recent turns. "
+            "Do NOT reuse that sentence structure or closing punchline—invent a fresh angle!"
+        )
+
+    banned_captions = list(dict.fromkeys(
+        recent_meme_captions[-6:] + [c.upper() for c in sorted(OVERUSED_MEME_CAPTIONS)]
+    ))
+    if banned_captions:
+        cap_str = "; ".join(f'"{c}"' for c in banned_captions[:6])
+        variety_rules.append(
+            f"- **BANNED MEME CAPTIONS (NEVER REUSE THESE)**: {cap_str}. "
+            "If you generate a meme (`[MEME_GEN: scene | TOP | BOTTOM]`), both captions MUST be 100% brand-new and specific to the exact joke in the latest message."
+        )
+
+    micro_impulse = random.choice(SPONTANEOUS_MICRO_MOMENTS)
+    variety_rules.append(f"- **SPONTANEOUS CONVERSATIONAL IMPULSE**: {micro_impulse}")
+
+    if variety_rules:
         api_messages[0]["content"] += (
-            f"\n\n### Variety & Anti-Repetition Reminder:\n"
-            f"- Vary your sentence openings! Do NOT start your message with any of your recent openers ({recent_openers_str})."
+            "\n\n### Dynamic Spontaneity, Variety & Anti-Repetition Rules (Active This Turn):\n"
+            + "\n".join(variety_rules)
         )
 
     return api_messages
@@ -470,9 +613,9 @@ def upsert_chat_memory_entry(chat_memory_file: str, channel_id: int, entry: dict
                             merged["content"] = new_content
                     else:
                         if "[Attached Media Description:" in new_content and "[Attached Media Description:" not in old_content:
-                            desc_match = IMAGE_DESC_STRIP_REGEX.search(new_content)
+                            desc_match = IMAGE_DESC_EXTRACT_REGEX.search(new_content)
                             if desc_match:
-                                merged["content"] = f"{old_content}\n{desc_match.group(0).strip()}".strip()
+                                merged["content"] = f"{old_content}\n[Attached Media Description: {desc_match.group(1).strip()}]".strip()
                     chat_memory[channel_id][i] = merged
                     updated = True
                     break
@@ -486,7 +629,8 @@ def upsert_chat_memory_entry(chat_memory_file: str, channel_id: int, entry: dict
         return chat_memory
 
     update_json_file(chat_memory_file, {}, _mutate)
-    
+
+
 def route_server_vs_general_facts(
     raw_server_facts: list[str],
     raw_general_facts: list[str],

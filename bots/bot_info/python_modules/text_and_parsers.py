@@ -2,14 +2,40 @@ import re
 from config import (
     VOICE_START_REGEX, MIMO_AUDIO_TAG_MAP, URL_REGEX, IMAGE_GEN_REGEX,
     UNCLOSED_IMAGE_GEN_REGEX, GIF_STRIP_REGEX, TTS_KAOMOJI_STRIP_REGEX,
-    BRACKET_EMOTE_REGEX, ERROR_REPLY_STRIP_REGEX, IMAGE_DESC_STRIP_REGEX,
-    MEME_GEN_REGEX, UNCLOSED_MEME_GEN_REGEX, LEARN_GENERAL_STRIP_REGEX,
-    LEARN_USER_STRIP_REGEX, LEARN_STRIP_REGEX
+    BRACKET_EMOTE_REGEX, ASTERISK_EMOTE_EXTRACT_REGEX, ERROR_REPLY_STRIP_REGEX,
+    IMAGE_DESC_STRIP_REGEX, MEME_GEN_REGEX, UNCLOSED_MEME_GEN_REGEX,
+    LEARN_GENERAL_STRIP_REGEX, LEARN_USER_STRIP_REGEX, LEARN_STRIP_REGEX
 )
 
 # ==============================================================================
-# VOICE, TEXT & EMOTE PARSING UTILITIES
+# VOICE, TEXT, CADENCE & EMOTE PARSING UTILITIES
 # ==============================================================================
+
+EMPHASIS_NON_EMOTE_WORDS = {
+    "not", "never", "really", "very", "so", "actually", "literally",
+    "always", "all", "you", "me", "this", "that", "what", "why", "how",
+    "everything", "nothing", "everyone", "no", "yes", "now", "here"
+}
+
+LEAKED_CHAT_PREFIX_REGEX = re.compile(
+    r'^\s*\[[a-zA-Z0-9_\-\.\s]{1,40}(?:\(speaking to [^\)]+\))?\]:\s*',
+    re.IGNORECASE
+)
+
+LEAKED_CONTEXT_TAG_REGEX = re.compile(
+    r'\[(?:Replying to [^\]\n]+|Contains (?:GIF|YouTube Video)[^\]\n]*|'
+    r'System (?:Visual|Context|Glitch)[^\]\n]*|'
+    r'Generated Attached (?:Image|Meme|Voice Audio)[^\]\n]*|'
+    r'Sent (?:GIF|Image|Meme|Audio) of[^\]\n]*)\]\n?',
+    re.IGNORECASE
+)
+
+PROMPT_BAKED_TEXT_STRIP_REGEX = re.compile(
+    r'(?:,\s*|\s+)(?:with\s+(?:bold\s+|white\s+|impact\s+|top\s+|bottom\s+)*(?:text|caption|captions|words|lettering)\s+'
+    r'(?:reading|saying|that\s+says)\s*[\'"][^\'"]+[\'"])',
+    re.IGNORECASE
+)
+
 
 def extract_and_strip_voice_msg(text: str) -> tuple[str | None, str]:
     """
@@ -17,6 +43,9 @@ def extract_and_strip_voice_msg(text: str) -> tuple[str | None, str]:
     brackets like [sigh] or [chuckle] are inside the voice script, and returns
     (voice_content, cleaned_reply_text).
     """
+    if not text:
+        return None, ""
+
     match = VOICE_START_REGEX.search(text)
     if not match:
         return None, text
@@ -40,6 +69,9 @@ def extract_and_strip_voice_msg(text: str) -> tuple[str | None, str]:
         voice_content = text[content_start:].strip()
         cleaned_text = text[:start_idx].strip()
 
+    # Strip any stray backticks that wrapped the [VOICE_MSG: ...] block
+    cleaned_text = re.sub(r'`+\s*`+', '', cleaned_text).strip()
+    cleaned_text = re.sub(r'`+$', '', cleaned_text).strip()
     return voice_content, cleaned_text
 
 
@@ -66,8 +98,8 @@ def sanitize_mimo_inline_tags(speech_text: str) -> str:
             return f"[{raw_tag}]"
         return ""
 
-    speech_text = re.sub(r'\*([^*]{1,35})\*', r'[\1]', speech_text)
-    speech_text = re.sub(r'\[([^\]]{1,40})\]', _replace_tag, speech_text)
+    speech_text = re.sub(r'\*([^*]{1,40})\*', r'[\1]', speech_text)
+    speech_text = re.sub(r'\[([^\]]{1,45})\]', _replace_tag, speech_text)
     return speech_text
 
 
@@ -80,7 +112,8 @@ def parse_mimotts_voice_block(
     Separates Director Mode headers (Role, Scene, Guidance) from the spoken dialogue
     for MiMo-V2.5-TTS-VoiceDesign, cleaning out unpronounceable chat kaomoji and URLs.
     """
-    lines = [line.strip() for line in raw_voice_content.split('\n') if line.strip()]
+    cleaned_raw = raw_voice_content.strip().strip('`')
+    lines = [line.strip().strip('`') for line in cleaned_raw.split('\n') if line.strip().strip('`')]
     director_instructions = []
     spoken_text_lines = []
     in_header_section = True
@@ -96,7 +129,13 @@ def parse_mimotts_voice_block(
         elif in_header_section and clean_line.startswith("(") and ")" in clean_line:
             in_header_section = False
             spoken_text_lines.append(clean_line)
-        elif in_header_section and len(director_instructions) > 0 and not clean_line.startswith("(") and len(spoken_text_lines) == 0 and line.startswith("-"):
+        elif (
+            in_header_section
+            and len(director_instructions) > 0
+            and not clean_line.startswith("(")
+            and len(spoken_text_lines) == 0
+            and line.startswith("-")
+        ):
             director_instructions.append(clean_line)
         else:
             in_header_section = False
@@ -113,9 +152,12 @@ def parse_mimotts_voice_block(
     if not user_prompt_content:
         user_prompt_content = default_role_desc
     if not assistant_speech_content:
-        assistant_speech_content = raw_voice_content.strip()
+        assistant_speech_content = cleaned_raw
 
     assistant_speech_content = URL_REGEX.sub('', assistant_speech_content)
+    assistant_speech_content = LEARN_USER_STRIP_REGEX.sub('', assistant_speech_content)
+    assistant_speech_content = LEARN_GENERAL_STRIP_REGEX.sub('', assistant_speech_content)
+    assistant_speech_content = LEARN_STRIP_REGEX.sub('', assistant_speech_content)
     assistant_speech_content = MEME_GEN_REGEX.sub('', assistant_speech_content)
     assistant_speech_content = UNCLOSED_MEME_GEN_REGEX.sub('', assistant_speech_content)
     assistant_speech_content = IMAGE_GEN_REGEX.sub('', assistant_speech_content)
@@ -124,6 +166,7 @@ def parse_mimotts_voice_block(
     assistant_speech_content = sanitize_mimo_inline_tags(assistant_speech_content)
     assistant_speech_content = TTS_KAOMOJI_STRIP_REGEX.sub('', assistant_speech_content)
     assistant_speech_content = re.sub(r'<a?:[a-zA-Z0-9_]+:\d+>', '', assistant_speech_content)
+    assistant_speech_content = re.sub(r'[\*_`~]+', '', assistant_speech_content)
     assistant_speech_content = re.sub(r'\s{2,}', ' ', assistant_speech_content).strip()
 
     if assistant_speech_content and not assistant_speech_content.startswith("("):
@@ -169,10 +212,62 @@ def convert_bracket_emotes_to_asterisks(text: str) -> str:
     return BRACKET_EMOTE_REGEX.sub(_replace, text)
 
 
+def extract_used_emotes(text: str) -> list[str]:
+    """
+    Extracts normalized *emote* phrases from a message so memory/context builders
+    can prevent bots from repeating identical physical actions every turn.
+    """
+    if not text:
+        return []
+    found = []
+    for m in ASTERISK_EMOTE_EXTRACT_REGEX.finditer(text):
+        em = re.sub(r'\s+', ' ', m.group(1).strip().lower())
+        words = em.split()
+        if 1 <= len(words) <= 8:
+            if len(words) == 1 and words[0] in EMPHASIS_NON_EMOTE_WORDS:
+                continue
+            if em not in found:
+                found.append(em)
+    return found
+
+
+def _prune_excessive_inline_emotes(text: str, max_emotes: int = 2) -> str:
+    """
+    Prevents robotic 'stage-direction overload' (e.g., 3-4 separate *emotes* stuffed
+    into a single short line) by keeping at most `max_emotes` distinct actions per turn
+    and removing duplicate emote stems within the same reply.
+    """
+    if not text or "*" not in text:
+        return text
+
+    seen_roots = set()
+    kept_count = 0
+
+    def _filter_emote(match):
+        nonlocal kept_count
+        raw_inner = match.group(1).strip()
+        words = re.findall(r'[a-z]+', raw_inner.lower())
+        if len(words) == 1 and words[0] in EMPHASIS_NON_EMOTE_WORDS:
+            return match.group(0)
+
+        root_key = " ".join(words[:2]) if words else raw_inner.lower()
+        if root_key in seen_roots or kept_count >= max_emotes:
+            return ""
+        seen_roots.add(root_key)
+        kept_count += 1
+        return f"*{raw_inner}*"
+
+    pruned = ASTERISK_EMOTE_EXTRACT_REGEX.sub(_filter_emote, text)
+    pruned = re.sub(r'\s{2,}', ' ', pruned).strip()
+    pruned = re.sub(r'\s+([,.;!?])', r'\1', pruned)
+    return pruned
+
+
 def clean_and_compact_reply(reply: str) -> str:
     """
-    Cleans stray markdown artifacts, converts bracket emotes to asterisks,
-    and removes blank line spacing so bot outputs are compact and natural.
+    Cleans stray markdown artifacts, leaked context headers, and system notes,
+    converts bracket emotes to asterisks, prunes excessive stage directions,
+    and removes blank line spacing so bot outputs read like natural Discord messages.
     """
     if not reply:
         return ""
@@ -181,23 +276,22 @@ def clean_and_compact_reply(reply: str) -> str:
     reply = LEARN_USER_STRIP_REGEX.sub('', reply)
     reply = LEARN_GENERAL_STRIP_REGEX.sub('', reply)
     reply = LEARN_STRIP_REGEX.sub('', reply)
-    reply = re.sub(
-        r'\[(?:Generated Attached (?:Image\vert{}Meme\vert{}Voice Audio)\vert{}Sent (?:GIF\vert{}Image\vert{}Meme\vert{}Audio) of\vert{}System Glitch (?:Event\vert{}Context)):[^\n]*\]\n?',
-        '',
-        reply,
-        flags=re.IGNORECASE
-    )
+    reply = IMAGE_DESC_STRIP_REGEX.sub('', reply)
+    reply = LEAKED_CONTEXT_TAG_REGEX.sub('', reply)
+    reply = LEAKED_CHAT_PREFIX_REGEX.sub('', reply)
     reply = re.sub(r'\*\s*\(System Note:.*?\)\s*\*?\n?', '', reply, flags=re.IGNORECASE)
-    reply = re.sub(r'\*\s*\([^)]*learned (?:server fact\vert{}general fact\vert{}about).*?\)\s*\*?\n?', '', reply, flags=re.IGNORECASE)
+    reply = re.sub(r'\*\s*\([^)]*learned (?:server fact|general fact|about).*?\)\s*\*?\n?', '', reply, flags=re.IGNORECASE)
 
     reply = convert_bracket_emotes_to_asterisks(reply)
+    reply = _prune_excessive_inline_emotes(reply, max_emotes=2)
 
     reply = re.sub(r'```[a-zA-Z]*\s*```', '', reply).strip()
     reply = re.sub(r'(?m)^>\s*$', '', reply).strip()
     reply = re.sub(r'(?m)^\s*(?:\*{1,3}|_{1,3}|~{1,3})\s*$', '', reply).strip()
     reply = re.sub(r'(?:\s*\*{2,}\s*)+$', '', reply).strip()
 
-    lines = [line.strip() for line in reply.split('\n') if line.strip()]
+    lines = [LEAKED_CHAT_PREFIX_REGEX.sub('', line.strip()).strip() for line in reply.split('\n') if line.strip()]
+    lines = [line for line in lines if line]
     if not lines:
         return ""
 
@@ -212,30 +306,51 @@ def clean_and_compact_reply(reply: str) -> str:
         return " ".join(lines).strip()
     return "\n".join(lines).strip()
 
+
 def parse_meme_gen_tag(raw_meme_str: str) -> tuple[str, str, str]:
     """
     Parses a [MEME_GEN: visual scene | TOP TEXT | BOTTOM TEXT] tag into
-    (visual_prompt, top_text, bottom_text), gracefully handling 2-part tags
-    and accidental newlines.
+    (visual_prompt, top_text, bottom_text), gracefully handling 2-part tags,
+    stripping baked-in text instructions from the visual prompt, and preventing
+    placeholder/duplicate captions.
     """
+    if not raw_meme_str:
+        return "", "", ""
+
     cleaned_raw = re.sub(r'\s+', ' ', raw_meme_str.strip()).rstrip(']')
+    cleaned_raw = re.sub(r'^\[?\s*(?:MEME_GEN|IMAGE_GEN)\s*:\s*', '', cleaned_raw, flags=re.IGNORECASE).strip()
     parts = [p.strip().strip('"\'') for p in cleaned_raw.split("|") if p.strip()]
 
     visual_prompt = parts[0] if len(parts) >= 1 else ""
     top_text = parts[1] if len(parts) >= 2 else ""
     bottom_text = parts[2] if len(parts) >= 3 else ""
 
-    visual_prompt = re.sub(r'^(?:scene|image|visual|prompt)\s*:\s*', '', visual_prompt, flags=re.IGNORECASE).strip()
-    top_text = re.sub(r'^(?:top\s*text|top|caption\s*1)\s*:\s*', '', top_text, flags=re.IGNORECASE).strip()
-    bottom_text = re.sub(r'^(?:bottom\s*text|bottom|caption\s*2)\s*:\s*', '', bottom_text, flags=re.IGNORECASE).strip()
+    visual_prompt = re.sub(r'^(?:scene|image|visual|prompt|visual\s+scene)\s*:\s*', '', visual_prompt, flags=re.IGNORECASE).strip()
+    visual_prompt = PROMPT_BAKED_TEXT_STRIP_REGEX.sub('', visual_prompt).strip()
+
+    top_text = re.sub(r'^(?:top\s*text|top\s*caption|top|caption\s*1|text\s*1|setup)\s*:\s*', '', top_text, flags=re.IGNORECASE).strip(' "\'*')
+    bottom_text = re.sub(r'^(?:bottom\s*text|bottom\s*caption|bottom|caption\s*2|text\s*2|punchline)\s*:\s*', '', bottom_text, flags=re.IGNORECASE).strip(' "\'*')
+
+    placeholder_values = {"top text", "bottom text", "none", "n/a", "null", "empty", "no text", "blank"}
+    if top_text.lower() in placeholder_values:
+        top_text = ""
+    if bottom_text.lower() in placeholder_values:
+        bottom_text = ""
 
     # If the LLM only provided 1 caption block (2 pipe parts total) and it has a natural setup/punchline split
-    if top_text and not bottom_text and len(top_text) > 32:
+    if top_text and not bottom_text and len(top_text) > 30:
         if " / " in top_text:
             sp = top_text.split(" / ", 1)
             top_text, bottom_text = sp[0].strip(), sp[1].strip()
         elif " - " in top_text:
             sp = top_text.split(" - ", 1)
             top_text, bottom_text = sp[0].strip(), sp[1].strip()
+        elif ": " in top_text and len(top_text) > 42:
+            sp = top_text.split(": ", 1)
+            if len(sp[0]) >= 8 and len(sp[1]) >= 8:
+                top_text, bottom_text = sp[0].strip(), sp[1].strip()
+
+    if top_text and bottom_text and top_text.lower() == bottom_text.lower():
+        bottom_text = ""
 
     return visual_prompt, top_text, bottom_text

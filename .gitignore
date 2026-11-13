@@ -32,5 +32,5 @@ env/
 
 
 # Ignored Bot Scripts
-bots/chud_bot.py
-bots/uwu_bot.py
+bots/*.py
+!bots/guild_assistant.py
