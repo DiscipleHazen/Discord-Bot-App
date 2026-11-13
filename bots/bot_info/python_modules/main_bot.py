@@ -1210,13 +1210,14 @@ def run_bot(
                             if isinstance(r, dict) and r.get("channel_id") == channel_id and (time.time() - r.get("timestamp", 0)) < 1800
                         ]
                         self_recently_generated = any(
-                            r.get("bot_id") == client.user.id and (time.time() - r.get("timestamp", 0)) < 150
+                            r.get("bot_id") == client.user.id and (time.time() - r.get("timestamp", 0)) < 75
                             for r in gen_records
                         )
                         if self_recently_generated:
                             dynamic_system["content"] += (
-                                "\n\n- **VISUAL COOLDOWN ACTIVE**: You already generated an image/meme less than 2 minutes ago! "
-                                "Unless the user is explicitly asking you to draw/generate a visual right now, reply with pure text ONLY and do NOT promise or attach an image/meme."
+                                "\n\n- **NO PHANTOM IMAGE PROMISES (CRITICAL)**: You generated an image recently. "
+                                "If you are replying with text only, NEVER say 'here is your...', 'let me fix that...', 'coming right up', or pretend to show/redraw an image! "
+                                "If the user corrected your previous image and you DO decide to redraw/fix it for them, you MUST include the full `[IMAGE_GEN: ...]` tag at the end of your message."
                             )
 
                         api_messages = build_api_messages_from_history(
@@ -1558,8 +1559,7 @@ def run_bot(
                                 elif not img_prompt and (
                                     is_explicit_img_req
                                     or (
-                                        is_relevant_trigger
-                                        and not is_topic_change_req
+                                        not is_topic_change_req
                                         and not is_short_reaction_msg
                                         and bot_promised_visual_in_text
                                     )

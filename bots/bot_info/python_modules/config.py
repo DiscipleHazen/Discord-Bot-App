@@ -213,12 +213,31 @@ USER_SUBJECT_EXTRACT_REGEX = re.compile(
     re.IGNORECASE | re.DOTALL
 )
 BOT_IMAGE_PROMISE_REGEX = re.compile(
-    r'\b(i\'ll generate|i generated|one rendering of|here\'s the (?:image|pic|picture|render|drawing|portrait|meme)|'
-    r'here\'s a (?:sky|picture|drawing|sketch|photo|portrait|scene|view)|'
-    r'coming right up|sketch it out|draw (?:it|that|one) for you|paint (?:it|that|one) for you|'
-    r'loading screen i generated|pull it out of the aether|give you one that\'s technically accurate|'
-    r'let\'s see what we\'re working with|behold[—\-\s]|points\s+at\s+|hologram\s+flickers\s+to\s+life|'
-    r'look\s+at\s+this\s+|see\?\s+certified)\b'
+    r'\b(?:'
+    r'i\'ll\s+(?:generate|draw|sketch|paint|render|fix\s+that)|'
+    r'i\s+(?:generated|drew|sketched|painted|rendered)|'
+    r'one\s+(?:fresh\s+|new\s+)?(?:rendering|portrait|drawing|sketch|picture|image|scene)\s+of|'
+    r'here(?:\x27s|\u2019s|\s+is)\s+(?:the|a|an|your)\s+(?:[a-z0-9_\-]+\s+){0,4}?(?:image|pic|picture|render|drawing|portrait|meme|sky|sketch|photo|scene|view|version|path|build|plate|order|fix|take|tribute|masterpiece)|'
+    r'here(?:\x27s|\u2019s|\s+is)\s+your\s+(?:true|new|fixed|updated|proper|fresh|actual|real)\s+[a-z0-9_\-]+|'
+    r'let\s+me\s+fix\s+that(?:\s+for\s+you|\s+with\s+a|\s+right\s+up)?|'
+    r'fixed\s+that\s+for\s+you|'
+    r'rebalanced\s+and\s+(?:purr[\-\s]?fected|perfected)|'
+    r'coming\s+right\s+up|'
+    r'sketch\s+it\s+out|'
+    r'draw\s+(?:it|that|one)\s+for\s+you|'
+    r'paint\s+(?:it|that|one)\s+for\s+you|'
+    r'conjured\s+properly|'
+    r'freshly\s+plated|'
+    r'loading\s+screen\s+i\s+generated|'
+    r'pull\s+it\s+out\s+of\s+the\s+aether|'
+    r'give\s+you\s+one\s+that\'s\s+technically\s+accurate|'
+    r'let\'s\s+see\s+what\s+we\'re\s+working\s+with|'
+    r'behold[—\-\s!]|'
+    r'points\s+at\s+|'
+    r'hologram\s+flickers\s+to\s+life|'
+    r'look\s+at\s+(?:this|how)\s+|'
+    r'see\?\s+certified'
+    r')\b'
     r'|\*(?:raises\s+wand\s+dramatically|conjures\s+a\s+vision|snaps\s+a\s+photo|projects\s+a\s+hologram|sketches|draws)\*',
     re.IGNORECASE
 )

@@ -677,11 +677,24 @@ async def synthesize_missing_image_prompt(
 ) -> str | None:
     requested_subject = _extract_explicit_requested_subject(user_prompt, bot_name, raw_history)
     clean_reply_scene = _strip_conversational_filler_from_reply(reply_text)
+
+    # Check if this bot generated an image recently so if the user is asking for a correction/fix
+    # (e.g. "shadowstep isnt in wow forever uwu" -> "let me fix that... here's your true rogue path"),
+    # the synthesizer knows the previous visual context and updates it!
+    last_bot_prompt = ""
+    bot_name_low = (bot_name or "").lower()
+    for rec in reversed(recent_gen_records or []):
+        if str(rec.get("bot_name", "")).lower() == bot_name_low:
+            last_bot_prompt = rec.get("prompt", "").split("[Meme Caption:")[0].strip()
+            if last_bot_prompt:
+                break
+
+    prev_context_line = f"\nBot's previous image prompt (update/fix this if the user is correcting a detail): {last_bot_prompt}" if last_bot_prompt else ""
     subject_clause = (
         f"CRITICAL: The user explicitly asked for an image of: '{requested_subject}'. "
         "Your visual prompt MUST depict that exact subject and all its requested details! "
         if requested_subject
-        else "Depict the EXACT subject, character, props, and details the bot is showing or describing in its reply. "
+        else "Depict the EXACT subject, character, props, and details the bot is presenting or fixing in its reply. "
     )
 
     payload = {
@@ -698,7 +711,7 @@ async def synthesize_missing_image_prompt(
             },
             {
                 "role": "user",
-                "content": f"User asked: {user_prompt}\nBot's visual description: {clean_reply_scene}"
+                "content": f"User said: {user_prompt}{prev_context_line}\nBot's reply presenting the new/fixed image: {clean_reply_scene}"
             }
         ],
         "temperature": 0.55,
@@ -723,6 +736,8 @@ async def synthesize_missing_image_prompt(
             pass
     if requested_subject:
         return f"High quality, vivid illustration of {requested_subject}, detailed lighting and atmospheric composition"
+    if clean_reply_scene and len(clean_reply_scene) >= 8:
+        return f"Vivid, expressive high-detail illustration depicting: {clean_reply_scene[:180]}, dramatic lighting and composition"
     return None
 
 
